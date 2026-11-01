@@ -1,0 +1,93 @@
+name: jdc-route-planner-check-addresses
+
+services:
+  powershell-base:
+    image: jdc-route-planner/powershell-base:7.6.6-alpine-3.24.3
+    build:
+      context: .
+      dockerfile: containers/powershell/Dockerfile
+
+  photon:
+    build:
+      context: .
+      dockerfile: containers/photon/Dockerfile
+    command: ["serve"]
+    working_dir: /geocoder/current
+    environment:
+      HOME: /tmp
+      PHOTON_DATA_ROOT: /geocoder
+      POWERSHELL_TELEMETRY_OPTOUT: "1"
+    volumes:
+      - type: bind
+        source: ${GEOCODER_DATA_DIR:-../jdc.routePlanner-private-data/geocoder}
+        target: /geocoder
+    expose:
+      - "2322"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:2322/status > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+
+  check-addresses:
+    build:
+      context: .
+      dockerfile: containers/check-addresses/Dockerfile
+      additional_contexts:
+        powershell-base: service:powershell-base
+    depends_on:
+      photon:
+        condition: service_healthy
+    environment:
+      CHECK_ADDRESSES_INPUT: /private/input/ritten.csv
+      CHECK_ADDRESSES_REPORT: /private/output/address-check.json
+      GEOCODER_BASE_URL: http://photon:2322/api/
+      HOME: /tmp
+      POWERSHELL_TELEMETRY_OPTOUT: "1"
+    volumes:
+      - type: bind
+        source: ${INPUT_DATA_DIR:-../jdc.routePlanner-private-data/input}
+        target: /private/input
+        read_only: true
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /private/output
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  update-geocode-database:
+    profiles:
+      - maintenance
+    build:
+      context: .
+      dockerfile: containers/photon/Dockerfile
+    command: ["update"]
+    working_dir: /geocoder
+    environment:
+      GEOCODER_DATA_ROOT: /geocoder
+      HOME: /tmp
+      POWERSHELL_TELEMETRY_OPTOUT: "1"
+    volumes:
+      - type: bind
+        source: ${GEOCODER_DATA_DIR:-../jdc.routePlanner-private-data/geocoder}
+        target: /geocoder
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
