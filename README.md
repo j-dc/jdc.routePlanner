@@ -24,7 +24,7 @@ De map met private data mag geen onderdeel worden van deze repository of VS Code
 
 ## Entrypoints
 
-De namen hieronder zijn de container-entrypoints. `CheckAddresses` en `UpdateGeocodeDatabase` zijn geïmplementeerd; de overige entrypoints zijn nog voorstellen. Scripts in `./scripts/` zijn host-side launchers; het effectieve werk gebeurt in de container. `./scripts/checkAddresses.ps1` start de adrescontrole met de lokale Photon-service. `./scripts/updateGeocodeDatabase.ps1` start de aparte database-updatecontainer.
+De namen hieronder zijn de container-entrypoints. `CheckAddresses` en `UpdateGeocodeDatabase` zijn geïmplementeerd; de overige entrypoints zijn nog voorstellen. Scripts in `./scripts/` zijn host-side launchers; het effectieve werk gebeurt in de container. `./scripts/setup.ps1` controleert de Photon-database, toont bij een bestaande index de updatedatum en vraagt of die moet worden bijgewerkt; bij een ontbrekende index start de updater automatisch. Daarna start setup de gedeelde Photon-service en wacht tot die gezond is. `./scripts/checkAddresses.ps1` start de adrescontrole met de lokale Photon-service. `./scripts/updateGeocodeDatabase.ps1` start de aparte database-updatecontainer.
 
 | EntryPoint | Moment | Verantwoordelijkheid in de container |
 | --- | --- | --- |
@@ -42,7 +42,7 @@ De Photon-updater logt de huidige fase naar de containeruitvoer. Tijdens downloa
 
 De adrescontrole gebruikt de gedeelde PowerShell-base-image uit `containers/powershell/Dockerfile`: Alpine 3.24.3 met de officiële PowerShell 7.6.6 musl-x64-archive. De SHA256 wordt vóór installatie gecontroleerd. De base ondersteunt momenteel `amd64`. De Photon-container gebruikt ook Alpine 3.24.3, met Bash en Java 21; de Photon-entrypoint is `containers/photon/entrypoint.sh`.
 
-Voer eerst `./scripts/updateGeocodeDatabase.ps1` uit om de Belgische Photon-index op te bouwen. Daarna start `./scripts/checkAddresses.ps1` Photon automatisch wanneer die nog niet draait. De input wordt read-only gemount vanaf `../jdc.routePlanner-private-data/input`; het rapport wordt geschreven naar `../jdc.routePlanner-private-data/output/address-check.json`. Deze paden zijn relatief aan de repository-root en kunnen met `INPUT_DATA_DIR`, `OUTPUT_DATA_DIR` en `GEOCODER_DATA_DIR` worden aangepast. De exitcode van de adrescontrole is `0` wanneer alle adressen eenduidig zijn gevonden, `2` bij ongeldige/onopgeloste/ambigue records en `3` bij een geocoderfout. Configuratie- en inputfouten geven exitcode `1`.
+Voer `./scripts/setup.ps1` uit om te controleren of de Belgische Photon-index bestaat en de geocoder-service te starten. Bij een bestaande index toont setup de updatedatum en vraagt of die moet worden bijgewerkt; bij een ontbrekende index wordt deze automatisch opgebouwd. `./scripts/checkAddresses.ps1` start Photon ook zelf wanneer die nog niet draait en stopt hem na afloop als deze launcher hem heeft gestart. De input wordt read-only gemount vanaf `../jdc.routePlanner-private-data/input`; het rapport wordt geschreven naar `../jdc.routePlanner-private-data/output/address-check.json`. Deze paden zijn relatief aan de repository-root en kunnen met `INPUT_DATA_DIR`, `OUTPUT_DATA_DIR` en `GEOCODER_DATA_DIR` worden aangepast. De exitcode van de adrescontrole is `0` wanneer alle adressen eenduidig zijn gevonden, `2` bij ongeldige/onopgeloste/ambigue records en `3` bij een geocoderfout. Configuratie- en inputfouten geven exitcode `1`.
 
 De rijvolgorde binnen iedere bestaande `rit`-groep geldt als de stopvolgorde voor de baseline, omdat de CSV geen aparte stopvolgordekolom bevat. Beide plannen moeten met dezelfde Valhalla-versie, tegels, costing-profiel en regels voor start- en eindpunten worden doorgerekend. Zo is het verschil in totale kilometers vergelijkbaar.
 
@@ -55,6 +55,14 @@ flowchart TD
 		S2["Host start ./scripts/updateGeocodeDatabase.ps1"] --> C2["Launcher start Photon-updatecontainer"]
 		C2 --> D2["Download Photon Europa-dump en controleer checksum"]
 		D2 --> E2["Importeer alleen BE naar stagingdatabase; wissel na succes"]
+		S3["Host start ./scripts/setup.ps1"] --> E3["Container controleert of de index bestaat en toont de datum"]
+		E3 --> E4{"Index bestaat?"}
+		E4 -- "Nee" --> C2
+		E4 -- "Ja" --> E5{"Bijwerken?"}
+		E5 -- "Ja" --> C2
+		E5 -- "Nee" --> E6["Behoud bestaande index"]
+		E2 --> E7["Launcher start Photon en wacht op healthcheck"]
+		E6 --> E7
 	end
 
 	subgraph Planning["Per planningsrun"]
@@ -80,4 +88,5 @@ flowchart TD
 
 	B -. "beschikbare tegels" .-> H
 	E2 -. "actieve Belgische Photon-index" .-> F
+	E7 -. "gezonde Photon-service" .-> F
 ```

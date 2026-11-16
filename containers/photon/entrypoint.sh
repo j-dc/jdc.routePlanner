@@ -85,6 +85,8 @@ update_database() {
     local staged_database="$staging_path/photon_data"
     [[ -d "$staged_database" && -n "$(find "$staged_database" -mindepth 1 -maxdepth 1 -print -quit)" ]] \
         || fail 'Photon import finished without producing a database.'
+    date -u +'%Y-%m-%dT%H:%M:%SZ' > "$staging_path/.updated-at" \
+        || fail 'Could not record the Photon database update time.'
 
     if [[ -e "$current_path" ]]; then
         log 'Moving the current Photon database to its rollback location.'
@@ -105,6 +107,26 @@ update_database() {
     printf 'Photon database updated with Belgium-only data. Previous database, if any, remains available for rollback.\n'
 }
 
+inspect_database() {
+    local data_root="${PHOTON_DATA_ROOT:-${GEOCODER_DATA_ROOT:-}}"
+    [[ -n "$data_root" && -d "$data_root" ]] || fail 'The geocoder data volume is not mounted.'
+
+    local database_path="$data_root/current/photon_data"
+    if [[ ! -d "$database_path" ]] || [[ -z "$(find "$database_path" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+        printf 'DATABASE_MISSING\n'
+        return
+    fi
+
+    local updated_at
+    if [[ -s "$data_root/current/.updated-at" ]]; then
+        IFS= read -r updated_at < "$data_root/current/.updated-at"
+    else
+        updated_at="$(date -u -r "$data_root/current" +'%Y-%m-%dT%H:%M:%SZ')" \
+            || fail 'Could not determine the Photon database date.'
+    fi
+    printf 'DATABASE_PRESENT|%s\n' "$updated_at"
+}
+
 case "$mode" in
     serve)
         log 'Starting the Photon server.'
@@ -117,6 +139,9 @@ case "$mode" in
         ;;
     update)
         update_database
+        ;;
+    inspect-database)
+        inspect_database
         ;;
     *)
         fail "Unsupported mode '$mode'. Expected 'serve' or 'update'."
