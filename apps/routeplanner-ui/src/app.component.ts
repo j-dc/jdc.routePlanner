@@ -21,6 +21,8 @@ interface GeocodingCandidate {
   countryCode: string;
   matchedFields: string[];
   matchedFieldCount: number;
+  discoveryMethod: string;
+  houseNumberMatchMode: string;
   isStrongAddressMatch: boolean;
   municipalityMatchState: string;
   geometryIsValid: boolean;
@@ -51,6 +53,12 @@ interface ReviewDocument {
   records: ReviewRecord[];
 }
 
+interface PhotonSearchResponse {
+  review: ReviewDocument;
+  resultsReturned: number;
+  newCandidatesAdded: number;
+}
+
 type ReviewFilter = 'open' | 'all' | 'accepted' | 'unresolved';
 
 @Component({
@@ -67,10 +75,12 @@ export class AppComponent implements OnInit {
   document: ReviewDocument | null = null;
   activeRecordNumber: number | null = null;
   selectedCandidateId = '';
+  manualSearchQuery = '';
   notes = '';
   filter: ReviewFilter = 'open';
   loading = true;
   saving = false;
+  searching = false;
   errorMessage = '';
   savedMessage = '';
 
@@ -120,6 +130,10 @@ export class AppComponent implements OnInit {
     this.activeRecordNumber = record.csvRecordNumber;
     this.selectedCandidateId = record.selectedCandidateId ??
       record.candidates.find(candidate => candidate.isStrongAddressMatch && candidate.geometryIsValid)?.candidateId ?? '';
+    this.manualSearchQuery = [
+      [record.address.street, record.address.houseNumber].filter(Boolean).join(' '),
+      [record.address.postcode, record.address.municipality].filter(Boolean).join(' '),
+    ].filter(Boolean).join(', ');
     this.notes = record.notes ?? '';
     this.savedMessage = '';
   }
@@ -177,6 +191,37 @@ export class AppComponent implements OnInit {
     });
   }
 
+  searchPhoton(): void {
+    if (!this.activeRecord || this.searching) {
+      return;
+    }
+
+    const query = this.manualSearchQuery.trim();
+    if (query.length < 3) {
+      this.errorMessage = 'Voer minimaal 3 tekens in om lokaal in Photon te zoeken.';
+      return;
+    }
+
+    this.searching = true;
+    this.errorMessage = '';
+    this.savedMessage = '';
+    const csvRecordNumber = this.activeRecord.csvRecordNumber;
+    this.http.post<PhotonSearchResponse>(`${this.apiUrl}/api/review/${csvRecordNumber}/search`, { query }).subscribe({
+      next: response => {
+        this.document = response.review;
+        this.searching = false;
+        const added = response.newCandidatesAdded;
+        this.savedMessage = added > 0
+          ? `Photon vond ${response.resultsReturned} resultaten; ${added} nieuwe kandidaten toegevoegd.`
+          : `Photon vond ${response.resultsReturned} resultaten; er waren geen nieuwe kandidaten.`;
+      },
+      error: error => {
+        this.searching = false;
+        this.errorMessage = this.errorText(error, 'Zoeken in de lokale Photon-database is mislukt.');
+      },
+    });
+  }
+
   addressText(address: ReviewAddress): string {
     return [address.street, address.houseNumber, address.postcode, address.municipality]
       .filter(Boolean)
@@ -187,6 +232,24 @@ export class AppComponent implements OnInit {
     return [candidate.postcode, candidate.municipality, candidate.countryCode]
       .filter(Boolean)
       .join(' · ') || 'Geen adresdetails';
+  }
+
+  openStreetMapUrl(candidate: GeocodingCandidate): string | null {
+    const objectMatch = /^(?<type>[NWR])\/(?<id>\d+)$/i.exec(candidate.candidateId);
+    if (objectMatch?.groups) {
+      const objectType = objectMatch.groups['type'].toUpperCase();
+      const objectPath = objectType === 'N' ? 'node' : objectType === 'W' ? 'way' : 'relation';
+      return `https://www.openstreetmap.org/${objectPath}/${objectMatch.groups['id']}`;
+    }
+
+    if (candidate.latitude === null || candidate.longitude === null ||
+        !Number.isFinite(candidate.latitude) || !Number.isFinite(candidate.longitude) ||
+        candidate.latitude < -90 || candidate.latitude > 90 ||
+        candidate.longitude < -180 || candidate.longitude > 180) {
+      return null;
+    }
+
+    return `https://www.openstreetmap.org/?mlat=${candidate.latitude}&mlon=${candidate.longitude}#map=18/${candidate.latitude}/${candidate.longitude}`;
   }
 
   recordLabel(record: ReviewRecord): string {

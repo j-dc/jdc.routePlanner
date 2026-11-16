@@ -1,6 +1,72 @@
-name: jdc-route-planner-review
+name: jdc-route-planner
 
 services:
+  powershell-base:
+    image: jdc-route-planner/powershell-base:7.6.6-alpine-3.24.3
+    build:
+      context: .
+      dockerfile: containers/powershell/Dockerfile
+
+  photon:
+    build:
+      context: .
+      dockerfile: containers/photon/Dockerfile
+    command: ["serve"]
+    working_dir: /geocoder/current
+    environment:
+      HOME: /tmp
+      PHOTON_DATA_ROOT: /geocoder
+      POWERSHELL_TELEMETRY_OPTOUT: "1"
+    volumes:
+      - type: bind
+        source: ${GEOCODER_DATA_DIR:-../jdc.routePlanner-private-data/geocoder}
+        target: /geocoder
+    expose:
+      - "2322"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD-SHELL", "curl --fail --silent http://127.0.0.1:2322/status > /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 60
+      start_period: 30s
+    restart: unless-stopped
+
+  check-addresses:
+    build:
+      context: .
+      dockerfile: containers/check-addresses/Dockerfile
+    depends_on:
+      photon:
+        condition: service_healthy
+    environment:
+      CHECK_ADDRESSES_INPUT: /private/input/ritten.csv
+      CHECK_ADDRESSES_REPORT: /private/output/address-check.json
+      GEOCODER_BASE_URL: http://photon:2322/api/
+      HOME: /tmp
+      POWERSHELL_TELEMETRY_OPTOUT: "1"
+    volumes:
+      - type: bind
+        source: ${INPUT_DATA_DIR:-../jdc.routePlanner-private-data/input}
+        target: /private/input
+        read_only: true
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /private/output
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   traefik:
     image: traefik:v3.3.2
     command:
@@ -24,12 +90,12 @@ services:
       start_period: 5s
     volumes:
       - type: bind
-        source: ./containers/review-proxy/dynamic.yaml
+        source: ./containers/proxy/dynamic.yaml
         target: /etc/traefik/dynamic.yaml
         read_only: true
     depends_on:
-      - review-web
-      - review-api
+      - routeplanner-ui
+      - routeplanner-api
     read_only: true
     tmpfs:
       - /tmp
@@ -39,10 +105,10 @@ services:
       - ALL
     restart: unless-stopped
 
-  review-web:
+  routeplanner-ui:
     build:
       context: .
-      dockerfile: apps/review-web/Dockerfile
+      dockerfile: apps/routeplanner-ui/Dockerfile
     expose:
       - "8080"
     healthcheck:
@@ -62,10 +128,10 @@ services:
       - ALL
     restart: unless-stopped
 
-  review-api:
+  routeplanner-api:
     build:
       context: .
-      dockerfile: containers/review-api/Dockerfile
+      dockerfile: containers/routeplanner-api/Dockerfile
     environment:
       Review__SourceReportPath: /source/address-check.json
       Review__InputCsvPath: /input/ritten.csv
@@ -85,7 +151,7 @@ services:
     expose:
       - "8080"
     healthcheck:
-      test: ["CMD", "dotnet", "Review.Api.dll", "--health-check"]
+      test: ["CMD", "dotnet", "RoutePlanner.Api.dll", "--health-check"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -101,4 +167,5 @@ services:
 
 volumes:
   review-data:
+    external: true
     name: jdc-route-planner-review-data

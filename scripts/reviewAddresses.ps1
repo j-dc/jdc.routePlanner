@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [ValidateNotNullOrEmpty()]
-    [string]$ComposeFile = 'compose.review.yaml'
+    [string]$ComposeFile = 'compose.yaml'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -29,7 +29,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Docker Compose configuration validation failed for '$ComposeFile'."
 }
 
-if (-not $PSCmdlet.ShouldProcess('Local geocoding review stack', "Build and start services using '$ComposeFile'")) {
+if (-not $PSCmdlet.ShouldProcess('Local geocoding review stack', "Start existing images using '$ComposeFile'")) {
     return
 }
 
@@ -38,7 +38,7 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Docker daemon is unavailable.'
 }
 
-& docker @composeArguments up --build --detach --wait --wait-timeout 600
+& docker @composeArguments up --no-build --detach --wait --wait-timeout 600 photon traefik routeplanner-ui routeplanner-api
 if ($LASTEXITCODE -ne 0) {
     throw 'The local geocoding review stack did not start healthy.'
 }

@@ -1,5 +1,5 @@
 **/node_modules/
 **/bin/
 **/obj/
-apps/review-web/dist/
-apps/review-web/.angular/
+apps/routeplanner-ui/dist/
+apps/routeplanner-ui/.angular/

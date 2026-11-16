@@ -4,5 +4,7 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <InvariantGlobalization>false</InvariantGlobalization>
+    <AssemblyName>RoutePlanner.Api</AssemblyName>
+    <RootNamespace>RoutePlanner.Api</RootNamespace>
   </PropertyGroup>
 </Project>

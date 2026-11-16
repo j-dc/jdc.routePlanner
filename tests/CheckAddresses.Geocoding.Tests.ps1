@@ -63,6 +63,62 @@ Describe 'Resolve-PhotonAddress' {
         }
     }
 
+    It 'uses the first house number before a bus suffix and does not select the bus number' {
+        InModuleScope Geocoding {
+            $script:photonRequestCount = 0
+            $address = @{ Street = 'Kerkstraat'; HouseNumber = '12 bus 3'; Postcode = '8000'; Municipality = 'Brugge' }
+            $cache = @{}
+            Mock Invoke-RestMethod {
+                $script:photonRequestCount++
+                $features = @()
+                if ($script:photonRequestCount -eq 1) {
+                    $features = @([pscustomobject]@{
+                        properties = @{ osm_type = 'N'; osm_id = 8; street = 'Kerkstraat'; housenumber = '3'; postcode = '8000'; city = 'Brugge'; countrycode = 'be' }
+                        geometry = @{ coordinates = @(3.2, 51.2) }
+                    })
+                }
+                elseif ($script:photonRequestCount -eq 3) {
+                    $features = @([pscustomobject]@{
+                        properties = @{ osm_type = 'N'; osm_id = 9; street = 'Kerkstraat'; housenumber = '12'; postcode = '8000'; city = 'Brugge'; countrycode = 'be' }
+                        geometry = @{ coordinates = @(3.3, 51.3) }
+                    })
+                }
+
+                [pscustomobject]@{ features = $features }
+            }
+
+            $result = Resolve-PhotonAddress -GeocoderUri ([uri]'http://photon:2322/api/') -Address $address -Cache $cache
+
+            $result.Status | Should Be 'valid'
+            $result.Reason | Should Be 'first_house_number_from_compound_matched'
+            $result.Longitude | Should Be 3.3
+            $script:photonRequestCount | Should Be 3
+            ($result.Candidates | Where-Object CandidateId -eq 'N/8').MatchedFieldCount | Should Be 3
+            ($result.Candidates | Where-Object CandidateId -eq 'N/9').HouseNumberMatchMode | Should Be 'first_number_from_compound'
+        }
+    }
+
+    It 'uses the first house number from a slash-delimited compound number' {
+        InModuleScope Geocoding {
+            $address = @{ Street = 'Kerkstraat'; HouseNumber = '12/3'; Postcode = '8000'; Municipality = 'Brugge' }
+            $cache = @{}
+            Mock Invoke-RestMethod {
+                [pscustomobject]@{
+                    features = @([pscustomobject]@{
+                        properties = @{ osm_type = 'N'; osm_id = 10; street = 'Kerkstraat'; housenumber = '12'; postcode = '8000'; city = 'Brugge'; countrycode = 'be' }
+                        geometry = @{ coordinates = @(3.4, 51.4) }
+                    })
+                }
+            }
+
+            $result = Resolve-PhotonAddress -GeocoderUri ([uri]'http://photon:2322/api/') -Address $address -Cache $cache
+
+            $result.Status | Should Be 'valid'
+            $result.Reason | Should Be 'first_house_number_from_compound_matched'
+            $result.Longitude | Should Be 3.4
+        }
+    }
+
     It 'accepts a unique core address match when the returned municipality is a different locality label' {
         InModuleScope Geocoding {
             $address = @{ Street = 'Kerkstraat'; HouseNumber = '12'; Postcode = '8791'; Municipality = 'Beveren-Leie' }

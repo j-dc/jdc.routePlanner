@@ -84,23 +84,53 @@
         <span>{{ record.candidates.length }} gevonden</span>
       </div>
 
+      <form class="manual-search" (ngSubmit)="searchPhoton()">
+        <label for="photon-search">Extra zoeken in Photon</label>
+        <div class="manual-search-controls">
+          <input
+            id="photon-search"
+            name="photon-search"
+            type="search"
+            [(ngModel)]="manualSearchQuery"
+            [disabled]="searching"
+            autocomplete="off">
+          <button type="submit" [disabled]="searching || manualSearchQuery.trim().length < 3">
+            {{ searching ? 'Zoeken…' : 'Zoek' }}
+          </button>
+        </div>
+        <span class="manual-search-caption">Zoekt alleen in de lokale Photon-database voor België.</span>
+      </form>
+
       <fieldset class="candidate-list" *ngIf="record.candidates.length; else noCandidates">
         <legend class="visually-hidden">Geocodingkandidaten</legend>
-        <label class="candidate" *ngFor="let candidate of record.candidates" [class.chosen]="selectedCandidateId === candidate.candidateId">
-          <input type="radio" name="candidate" [value]="candidate.candidateId" [(ngModel)]="selectedCandidateId" [disabled]="!candidate.geometryIsValid">
-          <span class="candidate-content">
-            <span class="candidate-topline">
-              <strong>{{ candidate.street || candidate.name || 'Naamloze locatie' }}{{ candidate.houseNumber ? ' ' + candidate.houseNumber : '' }}</strong>
-              <span class="match-score">{{ candidate.matchedFieldCount }}/4 velden</span>
+        <div class="candidate" *ngFor="let candidate of record.candidates" [class.chosen]="selectedCandidateId === candidate.candidateId">
+          <label class="candidate-option">
+            <input type="radio" name="candidate" [value]="candidate.candidateId" [(ngModel)]="selectedCandidateId" [disabled]="!candidate.geometryIsValid">
+            <span class="candidate-content">
+              <span class="candidate-topline">
+                <strong>{{ candidate.street || candidate.name || 'Naamloze locatie' }}{{ candidate.houseNumber ? ' ' + candidate.houseNumber : '' }}</strong>
+                <span class="match-score">{{ candidate.matchedFieldCount }}/4 velden</span>
+              </span>
+              <span class="candidate-address">{{ candidateLocation(candidate) }}</span>
+              <span class="candidate-fields" *ngIf="candidate.discoveryMethod === 'manual_search'">Handmatige zoekopdracht</span>
+              <span class="candidate-fields">Matcht: {{ candidate.matchedFields.length ? candidate.matchedFields.join(', ') : 'geen adresvelden' }}</span>
+              <span class="candidate-fields" *ngIf="candidate.houseNumberMatchMode === 'first_number_from_compound'">Eerste huisnummerdeel uit samengesteld nummer gebruikt</span>
+              <span class="candidate-coordinates" *ngIf="candidate.geometryIsValid && candidate.latitude !== null && candidate.longitude !== null">
+                {{ candidate.latitude | number:'1.5-6' }}, {{ candidate.longitude | number:'1.5-6' }}
+              </span>
+              <span class="candidate-invalid" *ngIf="!candidate.geometryIsValid">Coördinaten ongeldig</span>
             </span>
-            <span class="candidate-address">{{ candidateLocation(candidate) }}</span>
-            <span class="candidate-fields">Matcht: {{ candidate.matchedFields.length ? candidate.matchedFields.join(', ') : 'geen adresvelden' }}</span>
-            <span class="candidate-coordinates" *ngIf="candidate.geometryIsValid && candidate.latitude !== null && candidate.longitude !== null">
-              {{ candidate.latitude | number:'1.5-6' }}, {{ candidate.longitude | number:'1.5-6' }}
-            </span>
-            <span class="candidate-invalid" *ngIf="!candidate.geometryIsValid">Coördinaten ongeldig</span>
-          </span>
-        </label>
+          </label>
+          <a
+            class="candidate-map-link"
+            *ngIf="openStreetMapUrl(candidate) as mapUrl"
+            [href]="mapUrl"
+            target="_blank"
+            rel="noopener noreferrer"
+            [attr.aria-label]="'Bekijk kandidaat op OpenStreetMap: ' + (candidate.street || candidate.name || 'locatie')">
+            Bekijk op OpenStreetMap <span aria-hidden="true">↗</span>
+          </a>
+        </div>
       </fieldset>
       <ng-template #noCandidates><p class="empty-state">De geocoder gaf geen kandidaten terug. Controleer het bronadres en markeer de uitkomst met toelichting.</p></ng-template>
 

@@ -1,0 +1,44 @@
+name: jdc-route-planner-setup
+
+services:
+  fetch-osm:
+    build:
+      context: .
+      dockerfile: containers/fetch-osm/Dockerfile
+    environment:
+      OSM_DATA_ROOT: /osm
+    volumes:
+      - type: bind
+        source: ${OSM_DATA_DIR:-../jdc.routePlanner-private-data/osm}
+        target: /osm
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  update-geocode-database:
+    profiles:
+      - maintenance
+    build:
+      context: .
+      dockerfile: containers/photon/Dockerfile
+    command: ["update"]
+    working_dir: /geocoder
+    environment:
+      GEOCODER_DATA_ROOT: /geocoder
+      HOME: /tmp
+      POWERSHELL_TELEMETRY_OPTOUT: "1"
+    volumes:
+      - type: bind
+        source: ${GEOCODER_DATA_DIR:-../jdc.routePlanner-private-data/geocoder}
+        target: /geocoder
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

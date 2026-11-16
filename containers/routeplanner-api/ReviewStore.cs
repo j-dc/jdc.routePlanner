@@ -2,7 +2,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using Microsoft.VisualBasic.FileIO;
 
-namespace RoutePlanner.Review.Api;
+namespace RoutePlanner.Api;
 
 public sealed class ReviewStore
 {
@@ -22,14 +22,18 @@ public sealed class ReviewStore
     private readonly string _inputCsvPath;
     private readonly string _reviewPath;
     private readonly string _archiveDirectory;
+    private readonly HttpClient _photonHttpClient;
+    private readonly Uri _photonApiBaseUri;
     private readonly SemaphoreSlim _gate = new(1, 1);
 
-    public ReviewStore(string reportPath, string inputCsvPath, string reviewPath)
+    public ReviewStore(string reportPath, string inputCsvPath, string reviewPath, HttpClient photonHttpClient, string photonApiBaseUrl)
     {
         _reportPath = Path.GetFullPath(reportPath);
         _inputCsvPath = Path.GetFullPath(inputCsvPath);
         _reviewPath = Path.GetFullPath(reviewPath);
         _archiveDirectory = Path.Combine(Path.GetDirectoryName(_reviewPath)!, "archive");
+        _photonHttpClient = photonHttpClient;
+        _photonApiBaseUri = new Uri(photonApiBaseUrl, UriKind.Absolute);
     }
 
     public async Task<ReviewDocument> GetAsync(CancellationToken cancellationToken)
@@ -116,6 +120,87 @@ public sealed class ReviewStore
             };
             await WriteAtomicallyAsync(updatedDocument, cancellationToken);
             return updatedDocument;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<PhotonSearchResponse> SearchAsync(int csvRecordNumber, string query, CancellationToken cancellationToken)
+    {
+        var trimmedQuery = query?.Trim() ?? string.Empty;
+        if (trimmedQuery.Length < 3 || trimmedQuery.Length > 200)
+        {
+            throw new ArgumentException("Search text must be between 3 and 200 characters.");
+        }
+
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            var document = await GetOrCreateUnderLockAsync(cancellationToken);
+            var recordIndex = document.Records.FindIndex(record => record.CsvRecordNumber == csvRecordNumber);
+            if (recordIndex < 0)
+            {
+                throw new KeyNotFoundException("The CSV record number does not exist in the current geocoding report.");
+            }
+
+            var requestBuilder = new UriBuilder(_photonApiBaseUri)
+            {
+                Query = $"q={Uri.EscapeDataString(trimmedQuery)}&limit=10&countrycode=BE&dedupe=0"
+            };
+            using var response = await _photonHttpClient.GetAsync(requestBuilder.Uri, cancellationToken);
+            response.EnsureSuccessStatusCode();
+            await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            using var responseDocument = await JsonDocument.ParseAsync(responseStream, cancellationToken: cancellationToken);
+            if (!responseDocument.RootElement.TryGetProperty("features", out var features) || features.ValueKind != JsonValueKind.Array)
+            {
+                throw new JsonException("Photon response did not contain a features array.");
+            }
+
+            var record = document.Records[recordIndex];
+            var candidates = record.Candidates.ToList();
+            var candidateIds = candidates.Select(candidate => candidate.CandidateId)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var resultsReturned = 0;
+            var newCandidatesAdded = 0;
+
+            foreach (var feature in features.EnumerateArray())
+            {
+                resultsReturned++;
+                var candidate = CreateManualCandidate(feature, record.Address, resultsReturned);
+                if (candidateIds.Add(candidate.CandidateId))
+                {
+                    candidates.Add(candidate);
+                    newCandidatesAdded++;
+                }
+            }
+
+            if (newCandidatesAdded == 0)
+            {
+                return new PhotonSearchResponse
+                {
+                    Review = document,
+                    ResultsReturned = resultsReturned,
+                    NewCandidatesAdded = 0
+                };
+            }
+
+            var records = document.Records.ToList();
+            records[recordIndex] = record with { Candidates = candidates };
+            var updatedDocument = document with
+            {
+                UpdatedAtUtc = DateTimeOffset.UtcNow,
+                Records = records
+            };
+            await WriteAtomicallyAsync(updatedDocument, cancellationToken);
+
+            return new PhotonSearchResponse
+            {
+                Review = updatedDocument,
+                ResultsReturned = resultsReturned,
+                NewCandidatesAdded = newCandidatesAdded
+            };
         }
         finally
         {
@@ -220,6 +305,108 @@ public sealed class ReviewStore
             Latitude = latitude,
             Longitude = longitude
         };
+    }
+
+    private static GeocodingCandidate CreateManualCandidate(JsonElement feature, ReviewAddress address, int resultNumber)
+    {
+        var properties = feature.TryGetProperty("properties", out var featureProperties) && featureProperties.ValueKind == JsonValueKind.Object
+            ? featureProperties
+            : default;
+        var street = GetStringProperty(properties, "street");
+        var houseNumber = GetStringProperty(properties, "housenumber");
+        var postcode = GetStringProperty(properties, "postcode");
+        var municipality = GetStringProperty(properties, "city");
+        var countryCode = GetStringProperty(properties, "countrycode").ToUpperInvariant();
+
+        var longitude = (double?)null;
+        var latitude = (double?)null;
+        if (feature.TryGetProperty("geometry", out var geometry) &&
+            geometry.ValueKind == JsonValueKind.Object &&
+            geometry.TryGetProperty("coordinates", out var coordinates) &&
+            coordinates.ValueKind == JsonValueKind.Array &&
+            coordinates.GetArrayLength() >= 2 &&
+            coordinates[0].TryGetDouble(out var parsedLongitude) &&
+            coordinates[1].TryGetDouble(out var parsedLatitude) &&
+            double.IsFinite(parsedLongitude) && double.IsFinite(parsedLatitude) &&
+            parsedLongitude is >= -180 and <= 180 && parsedLatitude is >= -90 and <= 90)
+        {
+            longitude = parsedLongitude;
+            latitude = parsedLatitude;
+        }
+
+        var osmType = GetStringProperty(properties, "osm_type").ToUpperInvariant();
+        var osmId = GetStringProperty(properties, "osm_id");
+        var candidateId = osmType is "N" or "W" or "R" && ulong.TryParse(osmId, out _)
+            ? $"{osmType}/{osmId}"
+            : longitude is not null && latitude is not null
+                ? $"photon/{latitude.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}/{longitude.Value.ToString("R", System.Globalization.CultureInfo.InvariantCulture)}"
+                : $"photon/invalid/{resultNumber}";
+
+        var matchedFields = new List<string>();
+        AddMatch("Street", street, address.Street, matchedFields);
+        AddMatch("HouseNumber", houseNumber, address.HouseNumber, matchedFields, removeWhitespace: true);
+        AddMatch("Postcode", postcode, address.Postcode, matchedFields);
+        AddMatch("Municipality", municipality, address.Municipality, matchedFields);
+
+        var municipalityMatchState = string.IsNullOrWhiteSpace(municipality)
+            ? "missing"
+            : Normalize(municipality) == Normalize(address.Municipality) ? "match" : "mismatch";
+        var coreMatch = matchedFields.Contains("Street") && matchedFields.Contains("HouseNumber") && matchedFields.Contains("Postcode");
+        var geometryIsValid = longitude is not null && latitude is not null;
+
+        return new GeocodingCandidate
+        {
+            CandidateId = candidateId,
+            Name = GetStringProperty(properties, "name"),
+            Street = street,
+            HouseNumber = houseNumber,
+            Postcode = postcode,
+            Municipality = municipality,
+            CountryCode = countryCode,
+            MatchedFields = matchedFields.ToArray(),
+            MatchedFieldCount = matchedFields.Count,
+            DiscoveryMethod = "manual_search",
+            HouseNumberMatchMode = "manual_search",
+            IsExactAddressMatch = matchedFields.Count == 4 && countryCode == "BE",
+            IsStrongAddressMatch = coreMatch && countryCode == "BE",
+            MunicipalityMatchState = municipalityMatchState,
+            GeometryIsValid = geometryIsValid,
+            Longitude = longitude,
+            Latitude = latitude
+        };
+    }
+
+    private static string GetStringProperty(JsonElement properties, string name)
+    {
+        return properties.ValueKind == JsonValueKind.Object &&
+            properties.TryGetProperty(name, out var value) &&
+            value.ValueKind == JsonValueKind.String
+                ? value.GetString() ?? string.Empty
+                : properties.ValueKind == JsonValueKind.Object && properties.TryGetProperty(name, out value) && value.ValueKind == JsonValueKind.Number
+                    ? value.ToString()
+                    : string.Empty;
+    }
+
+    private static void AddMatch(string field, string actual, string expected, List<string> matches, bool removeWhitespace = false)
+    {
+        var normalizedActual = Normalize(actual);
+        var normalizedExpected = Normalize(expected);
+        if (removeWhitespace)
+        {
+            normalizedActual = string.Concat(normalizedActual.Where(character => !char.IsWhiteSpace(character)));
+            normalizedExpected = string.Concat(normalizedExpected.Where(character => !char.IsWhiteSpace(character)));
+        }
+
+        if (normalizedExpected.Length > 0 && normalizedExpected == normalizedActual)
+        {
+            matches.Add(field);
+        }
+    }
+
+    private static string Normalize(string value)
+    {
+        return string.Join(' ', value.Normalize(System.Text.NormalizationForm.FormKC).Trim().ToLowerInvariant()
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries));
     }
 
     private static Dictionary<int, CsvAddress> ReadCsvAddresses(string path)

@@ -1,4 +1,4 @@
-namespace RoutePlanner.Review.Api;
+namespace RoutePlanner.Api;
 
 public sealed record AddressCheckReport
 {
@@ -38,6 +38,8 @@ public sealed record GeocodingCandidate
     public string CountryCode { get; init; } = string.Empty;
     public string[] MatchedFields { get; init; } = [];
     public int MatchedFieldCount { get; init; }
+    public string DiscoveryMethod { get; init; } = "geocoding";
+    public string HouseNumberMatchMode { get; init; } = "exact";
     public bool IsExactAddressMatch { get; init; }
     public bool IsStrongAddressMatch { get; init; }
     public string MunicipalityMatchState { get; init; } = string.Empty;
@@ -89,4 +91,16 @@ public static class ReviewDecision
     public const string AutoAccepted = "auto_accepted";
     public const string Accepted = "accepted";
     public const string Unresolved = "unresolved";
+}
+
+public sealed record PhotonSearchRequest
+{
+    public string Query { get; init; } = string.Empty;
+}
+
+public sealed record PhotonSearchResponse
+{
+    public ReviewDocument Review { get; init; } = new();
+    public int ResultsReturned { get; init; }
+    public int NewCandidatesAdded { get; init; }
 }

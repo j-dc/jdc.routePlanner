@@ -1,0 +1,29 @@
+http:
+  routers:
+    address-review-web:
+      routeplanner-ui:
+        - web
+      rule: Host(`routing.localtest.me`)
+      service: address-review-web
+        service: routeplanner-ui
+      routeplanner-api:
+        - web
+      rule: Host(`routing-api.localtest.me`)
+      service: routeplanner-ui
+        service: routeplanner-api
+      photon-geocoder:
+        - web
+      rule: Host(`photon.localtest.me`)
+      service: photon-geocoder
+      service: routeplanner-api
+      loadBalancer:
+        servers:
+          - url: http://routeplanner-ui:8080
+    routeplanner-api:
+      loadBalancer:
+        servers:
+          - url: http://routeplanner-api:8080
+    photon-geocoder:
+      loadBalancer:
+        servers:
+          - url: http://photon:2322

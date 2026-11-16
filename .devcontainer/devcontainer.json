@@ -5,7 +5,7 @@
     "context": ".."
   },
   "workspaceFolder": "/workspaces/jdc.routePlanner",
-  "postCreateCommand": "npm ci --prefix apps/review-web",
+  "postCreateCommand": "npm ci --prefix apps/routeplanner-ui",
   "forwardPorts": [4200, 80],
   "portsAttributes": {
     "4200": { "label": "Angular development server", "onAutoForward": "notify" },

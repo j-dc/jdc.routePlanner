@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [ValidateNotNullOrEmpty()]
-    [string]$ComposeFile = 'compose.check-addresses.yaml',
+    [string]$ComposeFile = 'compose.yaml',
 
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_.-]*$')]
     [string]$ServiceName = 'check-addresses'
@@ -58,7 +58,7 @@ if ($PSCmdlet.ShouldProcess($ServiceName, "Start Docker Compose service using '$
     $photonStartedByLauncher = $false
 
     try {
-        & docker @composeArguments up --build -d --wait --wait-timeout 600 photon
+        & docker @composeArguments up --no-build -d --wait --wait-timeout 600 photon
         if ($LASTEXITCODE -ne 0) {
             throw 'Could not start or wait for the healthy Photon geocoder service.'
         }
@@ -66,7 +66,7 @@ if ($PSCmdlet.ShouldProcess($ServiceName, "Start Docker Compose service using '$
             $photonStartedByLauncher = $true
         }
 
-        & docker @composeArguments run --build --rm --no-deps $ServiceName
+        & docker @composeArguments run --rm --no-deps $ServiceName
         $checkExitCode = $LASTEXITCODE
         if ($checkExitCode -ne 0) {
             throw "Docker Compose service '$ServiceName' failed with exit code $checkExitCode."

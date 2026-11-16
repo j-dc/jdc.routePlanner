@@ -1,7 +1,7 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [ValidateNotNullOrEmpty()]
-    [string]$ComposeFile = 'compose.fetch-osm.yaml'
+    [string]$ComposeFile = 'compose.setup.yaml'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -35,7 +35,7 @@ if ($PSCmdlet.ShouldProcess('Geofabrik Belgium OSM extract', "Download and verif
         throw 'Docker daemon is unavailable.'
     }
 
-    & docker @composeArguments up --build --force-recreate --exit-code-from fetch-osm fetch-osm
+    & docker @composeArguments up --no-build --force-recreate --exit-code-from fetch-osm fetch-osm
     if ($LASTEXITCODE -ne 0) {
         throw "The OSM fetch container failed with exit code $LASTEXITCODE."
     }

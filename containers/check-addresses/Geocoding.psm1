@@ -9,10 +9,21 @@ function ConvertTo-PhotonMatchValue {
     return [regex]::Replace($normalizedValue.Trim().ToLowerInvariant(), '\s+', ' ')
 }
 
-function ConvertTo-PhotonHouseNumberValue {
+function Get-PhotonHouseNumberMatch {
     param([AllowNull()][object]$Value)
 
-    return (ConvertTo-PhotonMatchValue $Value) -replace '\s+', ''
+    $normalizedValue = ConvertTo-PhotonMatchValue $Value
+    if ($normalizedValue -match '^\s*(?<Primary>\d+[a-z]?)(?<Suffix>\s+(?:bus(?:nr|nummer)?|bte|bo[iî]te|box|appartement|app\.?|appt)\b.*|\s+\d.*|[/\-]\s*\d.*)$') {
+        return [pscustomobject]@{
+            Value = ($Matches.Primary -replace '\s+', '')
+            Mode = 'first_number_from_compound'
+        }
+    }
+
+    [pscustomobject]@{
+        Value = ($normalizedValue -replace '\s+', '')
+        Mode = 'exact'
+    }
 }
 
 function Test-PhotonCoordinates {
@@ -49,6 +60,10 @@ function ConvertTo-PhotonCandidate {
     }
 
     $matchedFields = [System.Collections.Generic.List[string]]::new()
+    $addressHouseNumber = Get-PhotonHouseNumberMatch $Address.HouseNumber
+    $candidateHouseNumber = Get-PhotonHouseNumberMatch $properties.housenumber
+    $houseNumberMatchMode = if ($addressHouseNumber.Mode -eq 'first_number_from_compound' -or
+        $candidateHouseNumber.Mode -eq 'first_number_from_compound') { 'first_number_from_compound' } else { 'exact' }
     foreach ($field in @(
         @{ Address = 'Street'; Photon = 'street' }
         @{ Address = 'HouseNumber'; Photon = 'housenumber' }
@@ -56,8 +71,8 @@ function ConvertTo-PhotonCandidate {
         @{ Address = 'Municipality'; Photon = 'city' }
     )) {
         if ($field.Address -eq 'HouseNumber') {
-            $expectedValue = ConvertTo-PhotonHouseNumberValue $Address[$field.Address]
-            $actualValue = ConvertTo-PhotonHouseNumberValue $properties.($field.Photon)
+            $expectedValue = $addressHouseNumber.Value
+            $actualValue = $candidateHouseNumber.Value
         }
         else {
             $expectedValue = ConvertTo-PhotonMatchValue $Address[$field.Address]
@@ -98,8 +113,9 @@ function ConvertTo-PhotonCandidate {
         CountryCode = $countryCode
         MatchedFields = $matchedFields.ToArray()
         MatchedFieldCount = $matchedFields.Count
-        IsExactAddressMatch = ($matchedFields.Count -eq 4 -and $countryCode -eq 'be')
+        IsExactAddressMatch = ($matchedFields.Count -eq 4 -and $countryCode -eq 'be' -and $houseNumberMatchMode -eq 'exact')
         IsStrongAddressMatch = ($coreAddressMatches -and $countryCode -eq 'be')
+        HouseNumberMatchMode = $houseNumberMatchMode
         MunicipalityMatchState = $municipalityMatchState
         GeometryIsValid = $geometryIsValid
         Longitude = $longitude
@@ -201,11 +217,15 @@ function Resolve-PhotonAddress {
         }
     }
 
-    $queries = @(
-        '{0} {1}, {2} {3}' -f $Address.Street, $Address.HouseNumber, $Address.Postcode, $Address.Municipality
-        '{0} {1}, {2} {3}' -f $Address.HouseNumber, $Address.Street, $Address.Postcode, $Address.Municipality
-        '{0}, {1} {2}' -f $Address.Street, $Address.Postcode, $Address.Municipality
-    )
+    $houseNumberMatch = Get-PhotonHouseNumberMatch $Address.HouseNumber
+    $queries = [System.Collections.Generic.List[string]]::new()
+    $queries.Add(('{0} {1}, {2} {3}' -f $Address.Street, $Address.HouseNumber, $Address.Postcode, $Address.Municipality))
+    $queries.Add(('{0} {1}, {2} {3}' -f $Address.HouseNumber, $Address.Street, $Address.Postcode, $Address.Municipality))
+    if ($houseNumberMatch.Mode -eq 'first_number_from_compound') {
+        $queries.Add(('{0} {1}, {2} {3}' -f $Address.Street, $houseNumberMatch.Value, $Address.Postcode, $Address.Municipality))
+        $queries.Add(('{0} {1}, {2} {3}' -f $houseNumberMatch.Value, $Address.Street, $Address.Postcode, $Address.Municipality))
+    }
+    $queries.Add(('{0}, {1} {2}' -f $Address.Street, $Address.Postcode, $Address.Municipality))
     $evaluatedCandidates = [System.Collections.Generic.List[object]]::new()
     $seenCandidateIds = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     $seenQueries = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
@@ -275,6 +295,9 @@ function Resolve-PhotonAddress {
             }
             elseif ($strongCandidates[0].MunicipalityMatchState -eq 'mismatch') {
                 $reason = 'strong_address_match_municipality_differs'
+            }
+            elseif ($strongCandidates[0].HouseNumberMatchMode -eq 'first_number_from_compound') {
+                $reason = 'first_house_number_from_compound_matched'
             }
             else {
                 $reason = 'strong_address_match_municipality_missing'

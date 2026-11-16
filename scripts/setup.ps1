@@ -1,10 +1,10 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
     [ValidateNotNullOrEmpty()]
-    [string]$ComposeFile = 'compose.check-addresses.yaml',
+    [string]$ComposeFile = 'compose.yaml',
 
     [ValidateNotNullOrEmpty()]
-    [string]$OsmComposeFile = 'compose.fetch-osm.yaml'
+    [string]$SetupComposeFile = 'compose.setup.yaml'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -23,17 +23,18 @@ if (-not (Test-Path -LiteralPath $composeFilePath -PathType Leaf)) {
     throw "Compose file not found: $ComposeFile"
 }
 
-if ([System.IO.Path]::IsPathRooted($OsmComposeFile)) {
-    throw 'OsmComposeFile must be a path relative to the repository root.'
+if ([System.IO.Path]::IsPathRooted($SetupComposeFile)) {
+    throw 'SetupComposeFile must be a path relative to the repository root.'
 }
-$osmComposeFilePath = [System.IO.Path]::GetFullPath((Join-Path -Path $repositoryRoot -ChildPath $OsmComposeFile))
-$relativeOsmComposePath = [System.IO.Path]::GetRelativePath($repositoryRoot, $osmComposeFilePath)
-if ($relativeOsmComposePath -match '^\.\.(?:[\\/]|$)') {
-    throw 'OsmComposeFile must remain inside the repository.'
+$setupComposeFilePath = [System.IO.Path]::GetFullPath((Join-Path -Path $repositoryRoot -ChildPath $SetupComposeFile))
+$relativeSetupComposePath = [System.IO.Path]::GetRelativePath($repositoryRoot, $setupComposeFilePath)
+if ($relativeSetupComposePath -match '^\.\.(?:[\\/]|$)') {
+    throw 'SetupComposeFile must remain inside the repository.'
 }
-if (-not (Test-Path -LiteralPath $osmComposeFilePath -PathType Leaf)) {
-    throw "Compose file not found: $OsmComposeFile"
+if (-not (Test-Path -LiteralPath $setupComposeFilePath -PathType Leaf)) {
+    throw "Compose file not found: $SetupComposeFile"
 }
+
 if (-not (Get-Command -Name docker -ErrorAction SilentlyContinue)) {
     throw 'Docker CLI was not found. Install Docker and ensure docker is on PATH.'
 }
@@ -43,13 +44,12 @@ $composeArguments = @('compose', '--project-directory', $repositoryRoot, '-f', $
 if ($LASTEXITCODE -ne 0) {
     throw "Docker Compose configuration validation failed for '$ComposeFile'."
 }
-$osmComposeArguments = @('compose', '--project-directory', $repositoryRoot, '-f', $osmComposeFilePath)
-& docker @osmComposeArguments config --quiet
+$setupComposeArguments = @('compose', '--project-directory', $repositoryRoot, '-f', $setupComposeFilePath)
+& docker @setupComposeArguments config --quiet
 if ($LASTEXITCODE -ne 0) {
-    throw "Docker Compose configuration validation failed for '$OsmComposeFile'."
+    throw "Docker Compose configuration validation failed for '$SetupComposeFile'."
 }
-
-if (-not $PSCmdlet.ShouldProcess('Route planner setup', "Inspect OSM and Photon data, update missing or selected data, and start Photon")) {
+if (-not $PSCmdlet.ShouldProcess('Route planner setup', "Build all Compose images, inspect OSM and Photon data, and update selected datasets")) {
     return
 }
 
@@ -58,7 +58,33 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Docker daemon is unavailable.'
 }
 
-$osmInspectionOutput = @(& docker @osmComposeArguments run --build --rm --no-deps fetch-osm inspect)
+$maintenanceComposeArguments = @('compose', '--profile', 'maintenance', '--project-directory', $repositoryRoot, '-f', $setupComposeFilePath)
+& docker @maintenanceComposeArguments config --quiet
+if ($LASTEXITCODE -ne 0) {
+    throw "Docker Compose maintenance configuration validation failed for '$SetupComposeFile'."
+}
+
+& docker @composeArguments build powershell-base
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not build the shared PowerShell base image.'
+}
+
+& docker @composeArguments build photon check-addresses routeplanner-ui routeplanner-api
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not build the runtime application images.'
+}
+
+& docker @composeArguments pull traefik
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not pull the Traefik image.'
+}
+
+& docker @maintenanceComposeArguments build fetch-osm update-geocode-database
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not build the setup workflow images.'
+}
+
+$osmInspectionOutput = @(& docker @setupComposeArguments run --rm --no-deps fetch-osm inspect)
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not inspect the OSM extract.'
 }
@@ -83,13 +109,13 @@ else {
 }
 
 if ($shouldUpdateOsm) {
-    & (Join-Path -Path $PSScriptRoot -ChildPath 'fetchOsm.ps1') -ComposeFile $OsmComposeFile -Confirm:$false
+    & (Join-Path -Path $PSScriptRoot -ChildPath 'fetchOsm.ps1') -ComposeFile $SetupComposeFile -Confirm:$false
 }
 else {
     Write-Output 'De bestaande OSM-extract blijft behouden.'
 }
 
-$inspectionOutput = @(& docker @composeArguments run --build --rm --no-deps photon inspect-database)
+$inspectionOutput = @(& docker @composeArguments run --rm --no-deps photon inspect-database)
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not inspect the Photon geocoder database.'
 }
@@ -115,13 +141,10 @@ else {
 }
 
 if ($shouldUpdateDatabase) {
-    & (Join-Path -Path $PSScriptRoot -ChildPath 'updateGeocodeDatabase.ps1') -ComposeFile $ComposeFile -Confirm:$false
+    & (Join-Path -Path $PSScriptRoot -ChildPath 'updateGeocodeDatabase.ps1') -ComposeFile $SetupComposeFile -PhotonComposeFile $ComposeFile -Confirm:$false
 }
 else {
     Write-Output 'De bestaande Photon-database blijft behouden.'
 }
 
-& docker @composeArguments up --build --detach --wait --wait-timeout 600 photon
-if ($LASTEXITCODE -ne 0) {
-    throw 'Could not start or wait for the healthy Photon geocoder service.'
-}
+Write-Output 'Container images are ready. Start the long-running services with .\scripts\start.ps1.'
