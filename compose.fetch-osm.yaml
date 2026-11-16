@@ -1,0 +1,20 @@
+name: jdc-route-planner-fetch-osm
+
+services:
+  fetch-osm:
+    build:
+      context: .
+      dockerfile: containers/fetch-osm/Dockerfile
+    environment:
+      OSM_DATA_ROOT: /osm
+    volumes:
+      - type: bind
+        source: ${OSM_DATA_DIR:-../jdc.routePlanner-private-data/osm}
+        target: /osm
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL

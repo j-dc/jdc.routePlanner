@@ -24,11 +24,11 @@ De map met private data mag geen onderdeel worden van deze repository of VS Code
 
 ## Entrypoints
 
-De namen hieronder zijn de container-entrypoints. `CheckAddresses` en `UpdateGeocodeDatabase` zijn geïmplementeerd; de overige entrypoints zijn nog voorstellen. Scripts in `./scripts/` zijn host-side launchers; het effectieve werk gebeurt in de container. `./scripts/setup.ps1` controleert de Photon-database, toont bij een bestaande index de updatedatum en vraagt of die moet worden bijgewerkt; bij een ontbrekende index start de updater automatisch. Daarna start setup de gedeelde Photon-service en wacht tot die gezond is. `./scripts/checkAddresses.ps1` start de adrescontrole met de lokale Photon-service. `./scripts/updateGeocodeDatabase.ps1` start de aparte database-updatecontainer.
+De namen hieronder zijn de container-entrypoints. `CheckAddresses` en `UpdateGeocodeDatabase` zijn geïmplementeerd; de overige entrypoints zijn nog voorstellen. Scripts in `./scripts/` zijn host-side launchers; het effectieve werk gebeurt in de container. `./scripts/setup.ps1` controleert eerst het OSM-extract, toont bij een bestaand bestand de updatedatum en vraagt of het moet worden bijgewerkt; bij een ontbrekend bestand start de fetch automatisch. Daarna controleert setup de Photon-database, vraagt bij een bestaande index of die moet worden bijgewerkt, en start de gedeelde Photon-service. `./scripts/checkAddresses.ps1` start de adrescontrole met de lokale Photon-service. `./scripts/updateGeocodeDatabase.ps1` start de aparte database-updatecontainer.
 
 | EntryPoint | Moment | Verantwoordelijkheid in de container |
 | --- | --- | --- |
-| `FetchOsm` | Eenmalig of bij verversen | Downloadt het gekozen OSM-extract naar beheerde opslag. |
+| `FetchOsm` | Eenmalig of bij handmatig verversen | Downloadt het Geofabrik België-extract dat West-Vlaanderen omvat, controleert de MD5 en bewaart de brondata in beheerde opslag. |
 | `BuildValhallaTiles` | Eenmalig of na wijzigingen aan data/configuratie | Bouwt of ververst Valhalla-tegels uit het OSM-extract. |
 | `UpdateGeocodeDatabase` | Eenmalig en bij een databaseresfresh | Downloadt de officiële Photon Europa-dump, controleert de checksum en importeert alleen landcode `BE` naar een nieuwe lokale database. |
 | `CheckAddresses` | Voor iedere planning | Valideert de exacte CSV-header en rijen en geocodeert adressen via Photon op het interne Compose-netwerk; rapporteert ongeldige, onopgeloste en ambigue adressen. |
@@ -38,11 +38,13 @@ De namen hieronder zijn de container-entrypoints. `CheckAddresses` en `UpdateGeo
 
 Photon draait lokaal als Compose-service en wordt niet op een hostpoort gepubliceerd. Adressen worden daardoor niet naar de publieke Photon-API gestuurd. De updater gebruikt de Europese Photon 1.x JSON-dump als bron, maar geeft bij import `-country-codes BE` mee; alleen Belgische gegevens worden in de actieve Photon-index gezet. De Europese dump is ongeveer 13,4 GB gecomprimeerd en staat, samen met de index, in beheerde opslag buiten de repository. Voor de eerste import is extra schijfruimte nodig voor de download en stagingdatabase. De update bouwt eerst een nieuwe index en wisselt die pas na een geslaagde import; de vorige index blijft beschikbaar voor rollback.
 
+`./scripts/fetchOsm.ps1` start de `fetch-osm`-service uit `compose.fetch-osm.yaml`. De container downloadt bij iedere handmatige start de nieuwste Geofabrik België-PBF (`https://download.geofabrik.de/europe/belgium-latest.osm.pbf`), verifieert de gepubliceerde MD5 en vervangt de bestaande extract pas na een geslaagde controle. Dit extract dekt heel België en daarmee West-Vlaanderen; het kan dus groter zijn dan het servicegebied. De PBF en `fetch-metadata.json` worden buiten de repository opgeslagen in `../jdc.routePlanner-private-data/osm`; `OSM_DATA_DIR` kan dit pad aanpassen. Downloaden van de brondata bouwt geen Valhalla-tegels. OSM-data © OpenStreetMap contributors, beschikbaar onder de ODbL; zie https://www.openstreetmap.org/copyright.
+
 De Photon-updater logt de huidige fase naar de containeruitvoer. Tijdens downloaden toont `curl` een percentagebalk; tijdens het importeren toont `pv` elke vijf seconden een percentagebalk naar stderr, die Docker ook in de containerlogs verzamelt. Dit meet de invoerstroom, niet de interne indexeringsfase van OpenSearch. Bekijk de uitvoer van `./scripts/updateGeocodeDatabase.ps1` of `docker compose logs -f update-geocode-database` om voortgang te volgen.
 
 De adrescontrole gebruikt de gedeelde PowerShell-base-image uit `containers/powershell/Dockerfile`: Alpine 3.24.3 met de officiële PowerShell 7.6.6 musl-x64-archive. De SHA256 wordt vóór installatie gecontroleerd. De base ondersteunt momenteel `amd64`. De Photon-container gebruikt ook Alpine 3.24.3, met Bash en Java 21; de Photon-entrypoint is `containers/photon/entrypoint.sh`.
 
-Voer `./scripts/setup.ps1` uit om te controleren of de Belgische Photon-index bestaat en de geocoder-service te starten. Bij een bestaande index toont setup de updatedatum en vraagt of die moet worden bijgewerkt; bij een ontbrekende index wordt deze automatisch opgebouwd. `./scripts/checkAddresses.ps1` start Photon ook zelf wanneer die nog niet draait en stopt hem na afloop als deze launcher hem heeft gestart. De input wordt read-only gemount vanaf `../jdc.routePlanner-private-data/input`; het rapport wordt geschreven naar `../jdc.routePlanner-private-data/output/address-check.json`. Deze paden zijn relatief aan de repository-root en kunnen met `INPUT_DATA_DIR`, `OUTPUT_DATA_DIR` en `GEOCODER_DATA_DIR` worden aangepast. De exitcode van de adrescontrole is `0` wanneer alle adressen eenduidig zijn gevonden, `2` bij ongeldige/onopgeloste/ambigue records en `3` bij een geocoderfout. Configuratie- en inputfouten geven exitcode `1`.
+Voer `./scripts/setup.ps1` uit om het OSM-extract en de Belgische Photon-index te controleren en Photon te starten. Bij een bestaand OSM-bestand toont setup de datum en vraagt of de nieuwste versie moet worden gedownload; ontbreekt het bestand, dan wordt het automatisch opgehaald. Voor Photon geldt hetzelfde keuzeproces, met automatisch opbouwen wanneer de index ontbreekt. `./scripts/checkAddresses.ps1` start Photon ook zelf wanneer die nog niet draait en stopt hem na afloop als deze launcher hem heeft gestart. De input wordt read-only gemount vanaf `../jdc.routePlanner-private-data/input`; het rapport wordt geschreven naar `../jdc.routePlanner-private-data/output/address-check.json`. Deze paden zijn relatief aan de repository-root en kunnen met `INPUT_DATA_DIR`, `OUTPUT_DATA_DIR` en `GEOCODER_DATA_DIR` worden aangepast. De exitcode van de adrescontrole is `0` wanneer alle adressen eenduidig zijn gevonden, `2` bij ongeldige/onopgeloste/ambigue records en `3` bij een geocoderfout. Configuratie- en inputfouten geven exitcode `1`.
 
 De rijvolgorde binnen iedere bestaande `rit`-groep geldt als de stopvolgorde voor de baseline, omdat de CSV geen aparte stopvolgordekolom bevat. Beide plannen moeten met dezelfde Valhalla-versie, tegels, costing-profiel en regels voor start- en eindpunten worden doorgerekend. Zo is het verschil in totale kilometers vergelijkbaar.
 
@@ -55,7 +57,13 @@ flowchart TD
 		S2["Host start ./scripts/updateGeocodeDatabase.ps1"] --> C2["Launcher start Photon-updatecontainer"]
 		C2 --> D2["Download Photon Europa-dump en controleer checksum"]
 		D2 --> E2["Importeer alleen BE naar stagingdatabase; wissel na succes"]
-		S3["Host start ./scripts/setup.ps1"] --> E3["Container controleert of de index bestaat en toont de datum"]
+		S3["Host start ./scripts/setup.ps1"] --> E8["Container controleert of OSM-extract bestaat en toont de datum"]
+		E8 --> E9{"OSM-extract bestaat?"}
+		E9 -- "Nee" --> S1
+		E9 -- "Ja" --> E10{"Nieuwste extract downloaden?"}
+		E10 -- "Ja" --> S1
+		E10 -- "Nee" --> E3["Container controleert of de Photon-index bestaat en toont de datum"]
+		B --> E3
 		E3 --> E4{"Index bestaat?"}
 		E4 -- "Nee" --> C2
 		E4 -- "Ja" --> E5{"Bijwerken?"}
