@@ -152,6 +152,15 @@ public sealed class ReviewStore
             var existing = JsonSerializer.Deserialize<ReviewDocument>(existingBytes, JsonOptions);
             if (existing?.SourceFingerprint == fingerprint)
             {
+                if (existing.SchemaVersion < 2)
+                {
+                    existing = existing with
+                    {
+                        SchemaVersion = 2,
+                        UpdatedAtUtc = DateTimeOffset.UtcNow
+                    };
+                    await WriteAtomicallyAsync(existing, cancellationToken);
+                }
                 return existing;
             }
 
@@ -202,7 +211,6 @@ public sealed class ReviewStore
         return new ReviewRecord
         {
             CsvRecordNumber = result.CsvRecordNumber,
-            Rit = string.IsNullOrWhiteSpace(result.Rit) ? csvAddress.Rit : result.Rit,
             Address = address,
             GeocodingStatus = result.Status,
             GeocodingReason = result.Reason,
@@ -244,7 +252,6 @@ public sealed class ReviewStore
             fields ??= [];
 
             rows[recordNumber] = new CsvAddress(
-                fields.Length > 0 ? fields[0].Trim() : string.Empty,
                 new ReviewAddress
                 {
                     Street = fields.Length > 2 ? fields[2].Trim() : string.Empty,
@@ -292,5 +299,5 @@ public sealed class ReviewStore
         }
     }
 
-    private sealed record CsvAddress(string Rit, ReviewAddress Address);
+    private sealed record CsvAddress(ReviewAddress Address);
 }

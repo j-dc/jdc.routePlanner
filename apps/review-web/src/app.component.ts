@@ -30,7 +30,6 @@ interface GeocodingCandidate {
 
 interface ReviewRecord {
   csvRecordNumber: number;
-  rit: string;
   address: ReviewAddress;
   geocodingStatus: string;
   geocodingReason: string;

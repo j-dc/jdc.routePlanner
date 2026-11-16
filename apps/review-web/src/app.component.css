@@ -35,8 +35,7 @@ h1 { margin-bottom: 0; font-size: 21px; line-height: 1.15; }
 .record-row:hover { background: #f6f8f6; }
 .record-row.selected { border-left-color: var(--forest); background: #f0f6f2; }
 .record-line { display: flex; align-items: center; gap: 8px; min-height: 22px; }
-.record-id, .route-id { color: var(--muted); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
-.route-id { padding-left: 7px; border-left: 1px solid var(--line); }
+.record-id { color: var(--muted); font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .status-pill { display: inline-flex; align-items: center; max-width: 145px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-left: auto; padding: 4px 7px; border-radius: 4px; background: #edf1ed; color: #526057; font-size: 10px; font-weight: 750; }
 .status-pill.pending { color: #79500f; background: var(--amber-pale); }
 .status-pill.auto_accepted, .status-pill.accepted { color: #19533e; background: var(--mint); }

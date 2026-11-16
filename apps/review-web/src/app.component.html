@@ -53,8 +53,7 @@
           [class.selected]="record.csvRecordNumber === activeRecordNumber"
           (click)="selectRecord(record)">
           <span class="record-line">
-            <span class="record-id">#{{ record.csvRecordNumber }}</span>
-            <span class="route-id">Rit {{ record.rit || '—' }}</span>
+            <span class="record-id">CSV-rij {{ record.csvRecordNumber }}</span>
             <span class="status-pill" [class]="'status-pill ' + record.decision">{{ recordLabel(record) }}</span>
           </span>
           <span class="record-address">{{ addressText(record.address) || 'Adresgegevens ontbreken' }}</span>
@@ -66,7 +65,7 @@
     <section class="detail-panel" *ngIf="activeRecord as record" aria-label="Adres beoordelen">
       <div class="detail-heading">
         <div>
-          <p class="eyebrow">CSV-record {{ record.csvRecordNumber }} · Rit {{ record.rit || '—' }}</p>
+          <p class="eyebrow">CSV-rij {{ record.csvRecordNumber }}</p>
           <h2>{{ addressText(record.address) || 'Adresgegevens ontbreken' }}</h2>
         </div>
         <span class="status-pill" [class]="'status-pill ' + record.decision">{{ recordLabel(record) }}</span>

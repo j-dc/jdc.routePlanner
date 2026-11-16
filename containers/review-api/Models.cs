@@ -10,7 +10,6 @@ public sealed record AddressCheckReport
 public sealed record AddressCheckResult
 {
     public int CsvRecordNumber { get; init; }
-    public string Rit { get; init; } = string.Empty;
     public ReviewAddress? Address { get; init; }
     public string Status { get; init; } = string.Empty;
     public string Reason { get; init; } = string.Empty;
@@ -49,7 +48,7 @@ public sealed record GeocodingCandidate
 
 public sealed record ReviewDocument
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
     public string SourceFingerprint { get; init; } = string.Empty;
     public DateTimeOffset SourceReportCreatedAtUtc { get; init; }
     public DateTimeOffset CreatedAtUtc { get; init; }
@@ -65,7 +64,6 @@ public sealed record ReviewDocument
 public sealed record ReviewRecord
 {
     public int CsvRecordNumber { get; init; }
-    public string Rit { get; init; } = string.Empty;
     public ReviewAddress Address { get; init; } = new();
     public string GeocodingStatus { get; init; } = string.Empty;
     public string GeocodingReason { get; init; } = string.Empty;

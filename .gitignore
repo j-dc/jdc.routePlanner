@@ -1,3 +1,5 @@
 **/node_modules/
+**/bin/
+**/obj/
 apps/review-web/dist/
 apps/review-web/.angular/
