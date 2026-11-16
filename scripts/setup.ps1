@@ -1,5 +1,8 @@
 [CmdletBinding(SupportsShouldProcess = $true, ConfirmImpact = 'Medium')]
 param(
+    [Alias('--force')]
+    [switch]$Force,
+
     [ValidateNotNullOrEmpty()]
     [string]$ComposeFile = 'compose.yaml',
 
@@ -9,6 +12,11 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [System.IO.Path]::GetFullPath((Join-Path -Path $PSScriptRoot -ChildPath '..'))
+
+if ($ComposeFile -eq '--force') {
+    $ComposeFile = 'compose.yaml'
+    $Force = $true
+}
 
 if ([System.IO.Path]::IsPathRooted($ComposeFile)) {
     throw 'ComposeFile must be a path relative to the repository root.'
@@ -49,7 +57,7 @@ $setupComposeArguments = @('compose', '--project-directory', $repositoryRoot, '-
 if ($LASTEXITCODE -ne 0) {
     throw "Docker Compose configuration validation failed for '$SetupComposeFile'."
 }
-if (-not $PSCmdlet.ShouldProcess('Route planner setup', "Build all Compose images, inspect OSM and Photon data, and update selected datasets")) {
+if (-not $PSCmdlet.ShouldProcess('Route planner setup', "Build all Compose images and update missing datasets")) {
     return
 }
 
@@ -101,8 +109,10 @@ if ($osmStateLines[0] -eq 'OSM_MISSING') {
 elseif ($osmStateLines[0] -match '^OSM_PRESENT\|(?<UpdatedAt>.+)$') {
     $osmUpdatedAt = [DateTimeOffset]::Parse($Matches.UpdatedAt).ToLocalTime()
     Write-Output ('OSM-extract gevonden; laatst opgehaald: {0}.' -f $osmUpdatedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))
-    $osmAnswer = Read-Host 'De nieuwste OSM-extract downloaden? (j/N)'
-    $shouldUpdateOsm = $osmAnswer -match '^(?i:j|ja|y|yes)$'
+    $shouldUpdateOsm = $Force.IsPresent
+    if (-not $shouldUpdateOsm) {
+        Write-Output 'Bestaande OSM-extract behouden. Gebruik --force om te verversen.'
+    }
 }
 else {
     throw 'The OSM inspection returned an invalid state.'
@@ -133,8 +143,10 @@ if ($databaseStateLines[0] -eq 'DATABASE_MISSING') {
 elseif ($databaseStateLines[0] -match '^DATABASE_PRESENT\|(?<UpdatedAt>.+)$') {
     $updatedAt = [DateTimeOffset]::Parse($Matches.UpdatedAt).ToLocalTime()
     Write-Output ('Photon-database gevonden; laatst bijgewerkt: {0}.' -f $updatedAt.ToString('yyyy-MM-dd HH:mm:ss zzz'))
-    $updateAnswer = Read-Host 'Photon-database bijwerken? (j/N)'
-    $shouldUpdateDatabase = $updateAnswer -match '^(?i:j|ja|y|yes)$'
+    $shouldUpdateDatabase = $Force.IsPresent
+    if (-not $shouldUpdateDatabase) {
+        Write-Output 'Bestaande Photon-database behouden. Gebruik --force om te verversen.'
+    }
 }
 else {
     throw 'The Photon database inspection returned an invalid state.'

@@ -39,7 +39,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 $services = @('photon', 'traefik', 'routeplanner-ui', 'routeplanner-api')
-& docker @composeArguments up --no-build --pull never --detach @services
+& docker @composeArguments up --no-build --pull never --remove-orphans --detach @services
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not start the services. Run .\scripts\setup.ps1 to build the required images first.'
 }

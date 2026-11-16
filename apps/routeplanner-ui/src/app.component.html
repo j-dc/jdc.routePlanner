@@ -1,10 +1,10 @@
 <main class="workspace">
   <header class="topbar">
     <div class="brand-lockup">
-      <span class="brand-mark" aria-hidden="true">RP</span>
+      <img class="brand-logo" src="/assets/logo.png" alt="Logo Oudercomité VBS Sint-Michiel Kuurne">
       <div>
         <p class="eyebrow">Route Planner</p>
-        <h1>Adrescontrole</h1>
+        <h1>Sint-ontbijt</h1>
       </div>
     </div>
     <div class="run-state" *ngIf="document as review">
@@ -12,6 +12,23 @@
       <span>{{ review.readyForNextStep ? 'Review afgerond' : review.pendingCount + review.unresolvedCount + ' te beoordelen' }}</span>
     </div>
   </header>
+
+  <nav class="wizard-progress" aria-label="Planningsstappen">
+    <ol>
+      <li class="wizard-step placeholder-step" aria-disabled="true">
+        <span class="step-number">1</span>
+        <span class="step-copy"><strong>Invoer</strong><small>Placeholder</small></span>
+      </li>
+      <li class="wizard-step active-step" aria-current="step">
+        <span class="step-number">2</span>
+        <span class="step-copy"><strong>Geocoding</strong><small>Locaties beoordelen</small></span>
+      </li>
+      <li class="wizard-step placeholder-step" aria-disabled="true">
+        <span class="step-number">3</span>
+        <span class="step-copy"><strong>Routeplanning</strong><small>Placeholder</small></span>
+      </li>
+    </ol>
+  </nav>
 
   <section class="summary" *ngIf="document as review" aria-label="Samenvatting">
     <div class="summary-item"><span class="summary-value">{{ review.totalRecords }}</span><span class="summary-label">Adressen</span></div>
