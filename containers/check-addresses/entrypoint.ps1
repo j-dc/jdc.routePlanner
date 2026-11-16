@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $inputPath = $env:CHECK_ADDRESSES_INPUT
 $reportPath = $env:CHECK_ADDRESSES_REPORT
 $geocoderBaseUrl = $env:GEOCODER_BASE_URL
+$geocodingModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Geocoding.psm1'
 $expectedHeaders = [string[]]@(
     'rit', 'naam', 'straat', 'nr.', 'postcode', 'gemeente',
     'aantal', 'bellen', 'Opmerking', 'opmerking', 'klas'
@@ -28,6 +29,7 @@ try {
     if ($geocoderUri.Scheme -notin @('http', 'https')) {
         throw 'GEOCODER_BASE_URL must use HTTP or HTTPS.'
     }
+    Import-Module -Name $geocodingModulePath -Force -ErrorAction Stop
 
     Add-Type -AssemblyName Microsoft.VisualBasic
     $parser = [Microsoft.VisualBasic.FileIO.TextFieldParser]::new($inputPath)
@@ -51,7 +53,10 @@ try {
     }
 
     $results = [System.Collections.Generic.List[object]]::new()
+    $addressCache = @{}
     $csvRecordNumber = 1
+    $consecutiveTransientFailures = 0
+    $geocoderCircuitOpen = $false
     while (-not $parser.EndOfData) {
         $fields = $parser.ReadFields()
         $csvRecordNumber++
@@ -59,70 +64,71 @@ try {
         $result = [ordered]@{
             CsvRecordNumber = $csvRecordNumber
             Rit = ''
+            Address = $null
             Status = ''
+            Reason = ''
             CandidateCount = 0
+            Candidates = @()
             Latitude = $null
             Longitude = $null
+            GeocoderAttempts = 0
+            FromCache = $false
         }
 
         if ($null -eq $fields -or $fields.Count -ne $expectedHeaders.Count) {
             $result.Status = 'malformed_row'
+            $result.Reason = 'field_count_mismatch'
             $results.Add([pscustomobject]$result)
             continue
         }
 
         $result.Rit = $fields[0].Trim()
         $addressParts = @($fields[2].Trim(), $fields[3].Trim(), $fields[4].Trim(), $fields[5].Trim())
+        $result.Address = [ordered]@{
+            Street = $addressParts[0]
+            HouseNumber = $addressParts[1]
+            Postcode = $addressParts[2]
+            Municipality = $addressParts[3]
+        }
         if (@($addressParts | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
             $result.Status = 'invalid_address'
+            $result.Reason = 'required_address_field_missing'
             $results.Add([pscustomobject]$result)
             continue
         }
 
-        $addressQuery = $addressParts -join ', '
-        $requestBuilder = [System.UriBuilder]::new($geocoderUri)
-        $requestBuilder.Query = 'q={0}&limit=2' -f [uri]::EscapeDataString($addressQuery)
-
-        try {
-            $geocoderResponse = Invoke-RestMethod `
-                -Uri $requestBuilder.Uri `
-                -Method Get `
-                -TimeoutSec 30 `
-                -Headers @{ Accept = 'application/geo+json'; 'User-Agent' = 'jdc.routePlanner/1.0' }
-        }
-        catch {
+        if ($geocoderCircuitOpen) {
             $result.Status = 'geocoder_error'
+            $result.Reason = 'circuit_open_after_consecutive_transient_failures'
             $results.Add([pscustomobject]$result)
             continue
         }
 
-        $features = @($geocoderResponse.features)
-        $result.CandidateCount = $features.Count
-        if ($features.Count -eq 0) {
-            $result.Status = 'unresolved'
+        $address = @{
+            Street = $addressParts[0]
+            HouseNumber = $addressParts[1]
+            Postcode = $addressParts[2]
+            Municipality = $addressParts[3]
         }
-        elseif ($features.Count -gt 1) {
-            $result.Status = 'ambiguous'
-        }
-        else {
-            $coordinates = @($features[0].geometry.coordinates)
-            if ($coordinates.Count -lt 2) {
-                $result.Status = 'invalid_geocoder_result'
+        $resolution = Resolve-PhotonAddress -GeocoderUri $geocoderUri -Address $address -Cache $addressCache
+        $result.Status = $resolution.Status
+        $result.Reason = $resolution.Reason
+        $result.CandidateCount = $resolution.CandidateCount
+        $result.Candidates = $resolution.Candidates
+        $result.GeocoderAttempts = $resolution.GeocoderAttempts
+        $result.FromCache = $resolution.FromCache
+        $result.Latitude = $resolution.Latitude
+        $result.Longitude = $resolution.Longitude
+
+        if (-not $resolution.FromCache -and $resolution.GeocoderAttempts -gt 0) {
+            if ($resolution.IsTransientFailure) {
+                $consecutiveTransientFailures++
+                if ($consecutiveTransientFailures -ge 3) {
+                    $geocoderCircuitOpen = $true
+                }
             }
             else {
-                $longitude = [double]$coordinates[0]
-                $latitude = [double]$coordinates[1]
-                if ([double]::IsNaN($longitude) -or [double]::IsInfinity($longitude) -or
-                    [double]::IsNaN($latitude) -or [double]::IsInfinity($latitude) -or
-                    $longitude -lt -180 -or $longitude -gt 180 -or
-                    $latitude -lt -90 -or $latitude -gt 90) {
-                    $result.Status = 'invalid_geocoder_result'
-                }
-                else {
-                    $result.Status = 'valid'
-                    $result.Longitude = $longitude
-                    $result.Latitude = $latitude
-                }
+                $consecutiveTransientFailures = 0
             }
         }
 
@@ -135,12 +141,17 @@ try {
     $validCount = @($results | Where-Object Status -eq 'valid').Count
     $geocoderErrorCount = @($results | Where-Object Status -eq 'geocoder_error').Count
     $problemCount = $results.Count - $validCount - $geocoderErrorCount
+    $statusCounts = [ordered]@{}
+    foreach ($statusGroup in ($results | Group-Object -Property Status)) {
+        $statusCounts[$statusGroup.Name] = $statusGroup.Count
+    }
     $report = [ordered]@{
         CreatedAtUtc = [DateTime]::UtcNow.ToString('o')
         TotalRecords = $results.Count
         Valid = $validCount
         Problems = $problemCount
         GeocoderErrors = $geocoderErrorCount
+        StatusCounts = $statusCounts
         Results = $results.ToArray()
     }
 

@@ -1,0 +1,19 @@
+{
+  "name": "Route Planner Angular (Node 24)",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "workspaceFolder": "/workspaces/jdc.routePlanner",
+  "postCreateCommand": "npm ci --prefix apps/review-web",
+  "forwardPorts": [4200, 80],
+  "portsAttributes": {
+    "4200": { "label": "Angular development server", "onAutoForward": "notify" },
+    "80": { "label": "Local review site/API", "onAutoForward": "silent" }
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": ["Angular.ng-template"]
+    }
+  }
+}

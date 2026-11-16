@@ -1,0 +1,126 @@
+<main class="workspace">
+  <header class="topbar">
+    <div class="brand-lockup">
+      <span class="brand-mark" aria-hidden="true">RP</span>
+      <div>
+        <p class="eyebrow">Route Planner</p>
+        <h1>Adrescontrole</h1>
+      </div>
+    </div>
+    <div class="run-state" *ngIf="document as review">
+      <span class="state-dot" [class.complete]="review.readyForNextStep"></span>
+      <span>{{ review.readyForNextStep ? 'Review afgerond' : review.pendingCount + review.unresolvedCount + ' te beoordelen' }}</span>
+    </div>
+  </header>
+
+  <section class="summary" *ngIf="document as review" aria-label="Samenvatting">
+    <div class="summary-item"><span class="summary-value">{{ review.totalRecords }}</span><span class="summary-label">Adressen</span></div>
+    <div class="summary-item"><span class="summary-value accepted-value">{{ review.acceptedCount }}</span><span class="summary-label">Geaccepteerd</span></div>
+    <div class="summary-item"><span class="summary-value pending-value">{{ review.pendingCount }}</span><span class="summary-label">Open</span></div>
+    <div class="summary-item"><span class="summary-value unresolved-value">{{ review.unresolvedCount }}</span><span class="summary-label">Onopgelost</span></div>
+    <p class="workflow-state" [class.ready]="review.readyForNextStep">
+      {{ review.readyForNextStep ? 'Klaar voor volgende stap' : 'Alle adressen moeten bevestigd zijn om door te gaan' }}
+    </p>
+  </section>
+
+  <div class="notice error-notice" *ngIf="errorMessage" role="alert">{{ errorMessage }}</div>
+  <div class="notice success-notice" *ngIf="savedMessage" role="status">{{ savedMessage }}</div>
+
+  <section class="loading-state" *ngIf="loading" aria-live="polite">Reviewgegevens laden…</section>
+
+  <section class="review-layout" *ngIf="!loading && document">
+    <aside class="record-panel" aria-label="Adressen">
+      <div class="panel-heading">
+        <div>
+          <p class="eyebrow">Geocodingresultaten</p>
+          <h2>Leveringen</h2>
+        </div>
+        <span class="total-count">{{ visibleRecords.length }}</span>
+      </div>
+
+      <div class="filter-bar" role="group" aria-label="Filter adressen">
+        <button type="button" [class.active]="filter === 'open'" (click)="setFilter('open')">Open</button>
+        <button type="button" [class.active]="filter === 'all'" (click)="setFilter('all')">Alles</button>
+        <button type="button" [class.active]="filter === 'accepted'" (click)="setFilter('accepted')">Gereed</button>
+        <button type="button" [class.active]="filter === 'unresolved'" (click)="setFilter('unresolved')">Onopgelost</button>
+      </div>
+
+      <div class="record-list" *ngIf="visibleRecords.length; else noRecords">
+        <button
+          class="record-row"
+          type="button"
+          *ngFor="let record of visibleRecords"
+          [class.selected]="record.csvRecordNumber === activeRecordNumber"
+          (click)="selectRecord(record)">
+          <span class="record-line">
+            <span class="record-id">#{{ record.csvRecordNumber }}</span>
+            <span class="route-id">Rit {{ record.rit || '—' }}</span>
+            <span class="status-pill" [class]="'status-pill ' + record.decision">{{ recordLabel(record) }}</span>
+          </span>
+          <span class="record-address">{{ addressText(record.address) || 'Adresgegevens ontbreken' }}</span>
+        </button>
+      </div>
+      <ng-template #noRecords><p class="empty-state">Geen adressen in dit filter.</p></ng-template>
+    </aside>
+
+    <section class="detail-panel" *ngIf="activeRecord as record" aria-label="Adres beoordelen">
+      <div class="detail-heading">
+        <div>
+          <p class="eyebrow">CSV-record {{ record.csvRecordNumber }} · Rit {{ record.rit || '—' }}</p>
+          <h2>{{ addressText(record.address) || 'Adresgegevens ontbreken' }}</h2>
+        </div>
+        <span class="status-pill" [class]="'status-pill ' + record.decision">{{ recordLabel(record) }}</span>
+      </div>
+
+      <div class="source-note" *ngIf="record.geocodingReason">
+        <span class="note-label">Geocoder</span>
+        <span>{{ record.geocodingReason }} · {{ record.candidates.length }} kandidaten</span>
+      </div>
+
+      <div class="candidate-heading">
+        <div>
+          <h3>Kies de juiste locatie</h3>
+          <p>Selecteer een kandidaat om de levering te bevestigen.</p>
+        </div>
+        <span>{{ record.candidates.length }} gevonden</span>
+      </div>
+
+      <fieldset class="candidate-list" *ngIf="record.candidates.length; else noCandidates">
+        <legend class="visually-hidden">Geocodingkandidaten</legend>
+        <label class="candidate" *ngFor="let candidate of record.candidates" [class.chosen]="selectedCandidateId === candidate.candidateId">
+          <input type="radio" name="candidate" [value]="candidate.candidateId" [(ngModel)]="selectedCandidateId" [disabled]="!candidate.geometryIsValid">
+          <span class="candidate-content">
+            <span class="candidate-topline">
+              <strong>{{ candidate.street || candidate.name || 'Naamloze locatie' }}{{ candidate.houseNumber ? ' ' + candidate.houseNumber : '' }}</strong>
+              <span class="match-score">{{ candidate.matchedFieldCount }}/4 velden</span>
+            </span>
+            <span class="candidate-address">{{ candidateLocation(candidate) }}</span>
+            <span class="candidate-fields">Matcht: {{ candidate.matchedFields.length ? candidate.matchedFields.join(', ') : 'geen adresvelden' }}</span>
+            <span class="candidate-coordinates" *ngIf="candidate.geometryIsValid && candidate.latitude !== null && candidate.longitude !== null">
+              {{ candidate.latitude | number:'1.5-6' }}, {{ candidate.longitude | number:'1.5-6' }}
+            </span>
+            <span class="candidate-invalid" *ngIf="!candidate.geometryIsValid">Coördinaten ongeldig</span>
+          </span>
+        </label>
+      </fieldset>
+      <ng-template #noCandidates><p class="empty-state">De geocoder gaf geen kandidaten terug. Controleer het bronadres en markeer de uitkomst met toelichting.</p></ng-template>
+
+      <label class="notes-label" for="review-notes">Reviewnotitie <span>(verplicht voor onopgelost)</span></label>
+      <textarea id="review-notes" rows="3" [(ngModel)]="notes" placeholder="Leg een correctie of reden vast"></textarea>
+
+      <div class="actions">
+        <button class="unresolved-button" type="button" (click)="saveDecision('unresolved')" [disabled]="saving">
+          Markeer onopgelost
+        </button>
+        <button class="accept-button" type="button" (click)="saveDecision('accepted')" [disabled]="saving || !selectedCandidateId">
+          {{ saving ? 'Opslaan…' : 'Bevestig locatie' }}
+        </button>
+      </div>
+    </section>
+
+    <section class="detail-panel blank-panel" *ngIf="!activeRecord && document.records.length">
+      <h2>Selecteer een levering</h2>
+      <p>Kies een record uit de lijst om de geocoding te beoordelen.</p>
+    </section>
+  </section>
+</main>

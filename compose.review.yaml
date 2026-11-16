@@ -1,0 +1,104 @@
+name: jdc-route-planner-review
+
+services:
+  traefik:
+    image: traefik:v3.3.2
+    command:
+      - --providers.file.filename=/etc/traefik/dynamic.yaml
+      - --providers.file.watch=true
+      - --entrypoints.web.address=:8000
+      - --api.dashboard=false
+      - --accesslog=false
+      - --log.level=INFO
+      - --ping=true
+    ports:
+      - target: 8000
+        published: "80"
+        host_ip: 127.0.0.1
+        protocol: tcp
+    healthcheck:
+      test: ["CMD", "traefik", "healthcheck", "--ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    volumes:
+      - type: bind
+        source: ./containers/review-proxy/dynamic.yaml
+        target: /etc/traefik/dynamic.yaml
+        read_only: true
+    depends_on:
+      - review-web
+      - review-api
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  review-web:
+    build:
+      context: .
+      dockerfile: apps/review-web/Dockerfile
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/health >/dev/null"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 5s
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /var/cache/nginx
+      - /var/run
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+  review-api:
+    build:
+      context: .
+      dockerfile: containers/review-api/Dockerfile
+    environment:
+      Review__SourceReportPath: /source/address-check.json
+      Review__InputCsvPath: /input/ritten.csv
+      Review__ReviewFilePath: /review/address-review.json
+    volumes:
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /source
+        read_only: true
+      - type: bind
+        source: ${INPUT_DATA_DIR:-../jdc.routePlanner-private-data/input}
+        target: /input
+        read_only: true
+      - type: volume
+        source: review-data
+        target: /review
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "dotnet", "Review.Api.dll", "--health-check"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
+volumes:
+  review-data:
+    name: jdc-route-planner-review-data

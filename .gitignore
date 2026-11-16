@@ -1,0 +1,3 @@
+**/node_modules/
+apps/review-web/dist/
+apps/review-web/.angular/

@@ -24,14 +24,15 @@ De map met private data mag geen onderdeel worden van deze repository of VS Code
 
 ## Entrypoints
 
-De namen hieronder zijn de container-entrypoints. `CheckAddresses` en `UpdateGeocodeDatabase` zijn geïmplementeerd; de overige entrypoints zijn nog voorstellen. Scripts in `./scripts/` zijn host-side launchers; het effectieve werk gebeurt in de container. `./scripts/setup.ps1` controleert eerst het OSM-extract, toont bij een bestaand bestand de updatedatum en vraagt of het moet worden bijgewerkt; bij een ontbrekend bestand start de fetch automatisch. Daarna controleert setup de Photon-database, vraagt bij een bestaande index of die moet worden bijgewerkt, en start de gedeelde Photon-service. `./scripts/checkAddresses.ps1` start de adrescontrole met de lokale Photon-service. `./scripts/updateGeocodeDatabase.ps1` start de aparte database-updatecontainer.
+De namen hieronder zijn de container-entrypoints. `CheckAddresses`, `UpdateGeocodeDatabase` en de adresreview zijn geïmplementeerd; de overige entrypoints zijn nog voorstellen. Scripts in `./scripts/` zijn host-side launchers; het effectieve werk gebeurt in de container. `./scripts/setup.ps1` controleert eerst het OSM-extract, toont bij een bestaand bestand de updatedatum en vraagt of het moet worden bijgewerkt; bij een ontbrekend bestand start de fetch automatisch. Daarna controleert setup de Photon-database, vraagt bij een bestaande index of die moet worden bijgewerkt, en start de gedeelde Photon-service. `./scripts/checkAddresses.ps1` start de adrescontrole met de lokale Photon-service. `./scripts/reviewAddresses.ps1` start de lokale reviewwebsite, API en reverse proxy. `./scripts/updateGeocodeDatabase.ps1` start de aparte database-updatecontainer.
 
 | EntryPoint | Moment | Verantwoordelijkheid in de container |
 | --- | --- | --- |
 | `FetchOsm` | Eenmalig of bij handmatig verversen | Downloadt het Geofabrik België-extract dat West-Vlaanderen omvat, controleert de MD5 en bewaart de brondata in beheerde opslag. |
 | `BuildValhallaTiles` | Eenmalig of na wijzigingen aan data/configuratie | Bouwt of ververst Valhalla-tegels uit het OSM-extract. |
 | `UpdateGeocodeDatabase` | Eenmalig en bij een databaseresfresh | Downloadt de officiële Photon Europa-dump, controleert de checksum en importeert alleen landcode `BE` naar een nieuwe lokale database. |
-| `CheckAddresses` | Voor iedere planning | Valideert de exacte CSV-header en rijen en geocodeert adressen via Photon op het interne Compose-netwerk; rapporteert ongeldige, onopgeloste en ambigue adressen. |
+| `CheckAddresses` | Voor iedere planning | Valideert de exacte CSV-header en rijen en geocodeert via Photon op het interne Compose-netwerk; dedupliceert identieke aanvragen, herhaalt tijdelijke fouten begrensd en accepteert alleen unieke exacte adresmatches. Overige kandidaten en foutredenen komen in het rapport voor handmatige controle. |
+| `ReviewAddresses` | Na iedere geocodingrun | Toont het bronadres en Photon-kandidaten in een lokale Angular-website. De .NET API bewaart bevestigde kandidaatkeuzes en coördinaten, of een onopgeloste beslissing met notitie. |
 | `CreateRoutes` | Voor iedere planning | Valideert de gekozen ritten- of chauffeursaantallen, gebruikt Valhalla-kosten om leveringen toe te wijzen en te ordenen, en maakt de definitieve routegegevens. Iedere geselecteerde chauffeur krijgt werk; de totale afstand wordt geminimaliseerd. |
 | `CreateDriverOutputs` | Na het maken van de routes | Maakt per chauffeur een OSM-kaart van de route en een adressenlijst in de exacte stopvolgorde. |
 | `CreateComparisonReport` | Na het maken van de routes | Groepeert de bestaande routes op `rit`, berekent hun afstanden met Valhalla en maakt een vergelijkingsrapport met een OSM-kaart van de bestaande routes, een aparte kaart van alle berekende routes, afstand per route, totalen en het afstandsverschil. |
@@ -45,6 +46,10 @@ De Photon-updater logt de huidige fase naar de containeruitvoer. Tijdens downloa
 De adrescontrole gebruikt de gedeelde PowerShell-base-image uit `containers/powershell/Dockerfile`: Alpine 3.24.3 met de officiële PowerShell 7.6.6 musl-x64-archive. De SHA256 wordt vóór installatie gecontroleerd. De base ondersteunt momenteel `amd64`. De Photon-container gebruikt ook Alpine 3.24.3, met Bash en Java 21; de Photon-entrypoint is `containers/photon/entrypoint.sh`.
 
 Voer `./scripts/setup.ps1` uit om het OSM-extract en de Belgische Photon-index te controleren en Photon te starten. Bij een bestaand OSM-bestand toont setup de datum en vraagt of de nieuwste versie moet worden gedownload; ontbreekt het bestand, dan wordt het automatisch opgehaald. Voor Photon geldt hetzelfde keuzeproces, met automatisch opbouwen wanneer de index ontbreekt. `./scripts/checkAddresses.ps1` start Photon ook zelf wanneer die nog niet draait en stopt hem na afloop als deze launcher hem heeft gestart. De input wordt read-only gemount vanaf `../jdc.routePlanner-private-data/input`; het rapport wordt geschreven naar `../jdc.routePlanner-private-data/output/address-check.json`. Deze paden zijn relatief aan de repository-root en kunnen met `INPUT_DATA_DIR`, `OUTPUT_DATA_DIR` en `GEOCODER_DATA_DIR` worden aangepast. De exitcode van de adrescontrole is `0` wanneer alle adressen eenduidig zijn gevonden, `2` bij ongeldige/onopgeloste/ambigue records en `3` bij een geocoderfout. Configuratie- en inputfouten geven exitcode `1`.
+
+Voer na `./scripts/checkAddresses.ps1` `./scripts/reviewAddresses.ps1` uit. De website is beschikbaar op `http://routing.localtest.me` en de API op `http://routing-api.localtest.me`. Traefik gebruikt een statische configuratie zonder Docker-socket en publiceert alleen op `127.0.0.1:80`; `localtest.me` resolveert naar localhost. Poort 80 moet vrij zijn. De API krijgt de CSV en het geocodingrapport read-only, en schrijft uitsluitend naar de beheerde Docker-volume `jdc-route-planner-review-data`. De review staat daar als `/review/address-review.json`; eerdere reviews worden gearchiveerd wanneer het bronrapport of de CSV verandert. De review bevat per CSV-record de beslissing, gekozen kandidaat en bevestigde coördinaten. Records die onopgelost blijven blokkeren de volgende planningsstap. Latere plannercontainers moeten deze volume read-only mounten en alleen geaccepteerde records gebruiken.
+
+De reviewwebsite gebruikt Angular 21 en Node 24. Open de repository in de `.devcontainer`; npm-installatie en Angular-ontwikkeling draaien daar, niet op de host. De API target .NET 11. De officiële .NET 11-images zijn voor deze runtime niet als Alpine-tags gepubliceerd; daarom gebruikt de API de gepinde `11.0.100-resolute-amd64` SDK- en `11.0.0-resolute-amd64` runtime-images.
 
 De rijvolgorde binnen iedere bestaande `rit`-groep geldt als de stopvolgorde voor de baseline, omdat de CSV geen aparte stopvolgordekolom bevat. Beide plannen moeten met dezelfde Valhalla-versie, tegels, costing-profiel en regels voor start- en eindpunten worden doorgerekend. Zo is het verschil in totale kilometers vergelijkbaar.
 
@@ -81,7 +86,9 @@ flowchart TD
 		E -- Nee --> F["Geocoder-container verwerkt adressen"]
 		E -- Ja --> G["Locaties vaststellen"]
 		F --> G
-		G --> H["Tegeldekking controleren"]
+		G --> R["Gebruiker beoordeelt Photon-resultaten op routing.localtest.me"]
+		R --> R2["Review API bewaart address-review.json buiten de repository"]
+		R2 --> H
 		H --> I["Plannercontainer start benodigde services en controleert gereedheid"]
 		I --> J["Valhalla-container berekent afstanden van bestaande ritten per rit-kolom"]
 		I --> K["Valhalla-container levert kosten voor de optimalisatie"]
