@@ -12,12 +12,25 @@ let secondVersion;
 let brokerState = 'idle';
 let photonReady = true;
 let startCount = 0;
+let geometryState = 'idle';
+let geometryStartCount = 0;
 const services = createServer((request, response) => {
   if (request.url === '/photon') {
     response.writeHead(photonReady ? 200 : 503);
     return response.end();
   }
   response.setHeader('content-type', 'application/json');
+  if (request.url.startsWith('/geometry/status/')) return response.end(JSON.stringify({ state: geometryState }));
+  if (request.url.startsWith('/geometry/start/')) {
+    if (geometryState === 'running') {
+      response.writeHead(409);
+      return response.end('{}');
+    }
+    geometryStartCount++;
+    geometryState = 'running';
+    response.writeHead(202);
+    return response.end(JSON.stringify({ state: geometryState }));
+  }
   if (request.url.startsWith('/status/')) return response.end(JSON.stringify({ state: brokerState }));
   if (request.url.startsWith('/start/')) {
     if (brokerState === 'running') {
@@ -121,4 +134,19 @@ test('address check requires a valid version and origin and checks service readi
   assert.equal((await (await fetch(checkUrl)).json()).state, 'running');
   assert.equal((await fetch(checkUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).status, 409);
   assert.equal(startCount, 1);
+});
+
+test('geometry refresh validates version and origin and reports its status', async () => {
+  const url = `${baseUrl}/api/versions/${secondVersion}/osm-geometry`;
+  const request = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
+  assert.equal((await (await fetch(`${url}/status`)).json()).state, 'idle');
+  assert.equal((await fetch(`${baseUrl}/api/versions/invalid/osm-geometry`, request)).status, 404);
+  assert.equal((await fetch(url, { ...request, headers: { 'content-type': 'text/plain' } })).status, 403);
+  assert.equal((await fetch(url, { ...request, headers: { ...request.headers, origin: 'https://other.example' } })).status, 403);
+  const withoutReport = (await (await upload(csv)).json()).id;
+  assert.equal((await fetch(`${baseUrl}/api/versions/${withoutReport}/osm-geometry`, request)).status, 404);
+  assert.equal((await fetch(url, request)).status, 202);
+  assert.equal((await (await fetch(`${url}/status`)).json()).state, 'running');
+  assert.equal((await fetch(url, request)).status, 409);
+  assert.equal(geometryStartCount, 1);
 });

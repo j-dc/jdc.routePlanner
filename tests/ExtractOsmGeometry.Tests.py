@@ -28,9 +28,14 @@ class ExtractOsmGeometryTests(unittest.TestCase):
             xml_path.write_text(OSM, encoding="utf-8")
             subprocess.run(["osmium", "cat", str(xml_path), "-o", str(pbf_path)], check=True)
             report = {"InputSha256": "INPUT", "Results": [
-                {"CsvRecordNumber": 2, "Candidates": [{"CandidateId": "N/1"}, {"CandidateId": "W/10"}]},
-                {"CsvRecordNumber": 3, "Candidates": [{"CandidateId": "W/10"}, {"CandidateId": "R/20"},
-                                                      {"CandidateId": "W/999"}, {"CandidateId": "fallback"}]},
+                {"CsvRecordNumber": 2, "Status": "valid", "Longitude": 3.01, "Latitude": 50.0,
+                 "Candidates": [{"CandidateId": "N/1", "GeometryIsValid": True, "Longitude": 3.0, "Latitude": 50.0},
+                                {"CandidateId": "W/10", "GeometryIsValid": True, "Longitude": 3.01, "Latitude": 50.0}]},
+                {"CsvRecordNumber": 3, "Status": "ambiguous", "Candidates": [{"CandidateId": "R/20"}]},
+                {"CsvRecordNumber": 4, "Status": "valid", "Longitude": 3.0, "Latitude": 50.0,
+                 "Candidates": [{"CandidateId": "W/999", "GeometryIsValid": True, "Longitude": 3.0, "Latitude": 50.0}]},
+                {"CsvRecordNumber": 5, "Status": "valid", "Longitude": 3.0, "Latitude": 50.0,
+                 "Candidates": [{"CandidateId": "fallback", "GeometryIsValid": True, "Longitude": 3.0, "Latitude": 50.0}]},
             ]}
             report_path = root / f"address-check-{VERSION}.json"
             report_path.write_text(json.dumps(report), encoding="utf-8")
@@ -38,7 +43,9 @@ class ExtractOsmGeometryTests(unittest.TestCase):
             input_path.write_bytes(b"synthetic input")
             review_path = root / f"address-review-{VERSION}.json"
             review = {"sourceFingerprint": hashlib.sha256(report_path.read_bytes() + input_path.read_bytes()).hexdigest(),
-                      "records": [{"csvRecordNumber": 2, "candidates": [{"candidateId": "N/5"}]}]}
+                      "records": [{"csvRecordNumber": 2, "decision": "accepted", "selectedCandidateId": "N/5",
+                                   "candidates": [{"candidateId": "N/5", "geometryIsValid": True,
+                                                   "longitude": 3.0, "latitude": 50.0}]}]}
             review_path.write_text(json.dumps(review), encoding="utf-8")
             environment = dict(os.environ, CHECK_ADDRESSES_VERSION=VERSION, GEOMETRY_REPORT_DIR=directory,
                                GEOMETRY_OUTPUT_DIR=directory, GEOMETRY_INPUT_DIR=directory,
@@ -46,18 +53,17 @@ class ExtractOsmGeometryTests(unittest.TestCase):
             subprocess.run(["python3", "/app/entrypoint.py"], env=environment, check=True)
             data = json.loads((root / f"osm-geometry-{VERSION}.geojson").read_text(encoding="utf-8"))
             features = {feature["id"]: feature for feature in data["features"]}
-            self.assertEqual(set(features), {"N/1", "N/5", "W/10", "R/20"})
-            self.assertEqual(features["N/1"]["geometry"]["type"], "Point")
-            self.assertIn(features["W/10"]["geometry"]["type"], ("Polygon", "MultiPolygon"))
-            self.assertEqual(features["R/20"]["geometry"]["type"], "MultiPolygon")
-            self.assertEqual(features["W/10"]["properties"]["recordNumbers"], [2, 3])
-            self.assertEqual(data["metadata"]["missingObjects"], [{"candidateId": "W/999", "recordNumbers": [3]}])
-            self.assertEqual(data["metadata"]["unidentifiableCandidates"][0]["candidateId"], "fallback")
+            self.assertEqual(set(features), {"N/5"})
+            self.assertEqual(features["N/5"]["geometry"]["type"], "Point")
+            self.assertEqual(features["N/5"]["properties"]["recordNumbers"], [2])
+            self.assertEqual(data["metadata"]["missingObjects"], [{"candidateId": "W/999", "recordNumbers": [4]}])
+            self.assertEqual(data["metadata"]["unidentifiableCandidates"], [{"recordNumber": 5, "candidateId": "fallback"}])
             review["sourceFingerprint"] = "STALE"
             review_path.write_text(json.dumps(review), encoding="utf-8")
             subprocess.run(["python3", "/app/entrypoint.py"], env=environment, check=True)
             stale_data = json.loads((root / f"osm-geometry-{VERSION}.geojson").read_text(encoding="utf-8"))
             self.assertNotIn("N/5", {feature["id"] for feature in stale_data["features"]})
+            self.assertIn("W/10", {feature["id"] for feature in stale_data["features"]})
 
     def test_missing_extract_preserves_existing_geojson(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -84,7 +90,9 @@ class ExtractOsmGeometryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             (root / f"address-check-{VERSION}.json").write_text(json.dumps({"Results": [
-                {"CsvRecordNumber": 2, "Candidates": [{"CandidateId": "W/10"}]},
+                {"CsvRecordNumber": 2, "Status": "valid", "Longitude": 3.01, "Latitude": 50.0,
+                 "Candidates": [{"CandidateId": "W/10", "GeometryIsValid": True,
+                                 "Longitude": 3.01, "Latitude": 50.0}]},
             ]}), encoding="utf-8")
             pbf = root / "invalid.pbf"
             pbf.write_text("invalid", encoding="utf-8")

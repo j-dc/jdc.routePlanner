@@ -77,7 +77,7 @@ services:
       context: .
       dockerfile: containers/extract-osm-geometry/Dockerfile
     environment:
-      CHECK_ADDRESSES_VERSION_FILE: /jobs/version
+      CHECK_ADDRESSES_VERSION_FILE: /jobs/geometry-version
       GEOMETRY_REPORT_DIR: /source
       GEOMETRY_OUTPUT_DIR: /output
       GEOMETRY_INPUT_DIR: /input

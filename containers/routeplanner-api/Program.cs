@@ -191,6 +191,55 @@ app.MapGet("/api/versions/{version}/osm-geometry", async (string version, Cancel
     }
 });
 
+app.MapGet("/api/versions/{version}/osm-geometry/status", async (string version, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetReviewStore(version) is null) return Results.NotFound();
+    try
+    {
+        using var response = await client.GetAsync(new Uri(new Uri(brokerUrl), $"geometry/status/{version}"), cancellationToken);
+        if (!response.IsSuccessStatusCode) return Results.Problem("De status van de geometrie is niet beschikbaar.", statusCode: 503);
+        var status = await response.Content.ReadFromJsonAsync<AddressCheckStatus>(cancellationToken);
+        return status is null ? Results.Problem("De status van de geometrie is ongeldig.", statusCode: 502) : Results.Ok(status);
+    }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+    {
+        return Results.Problem("De status van de geometrie is niet beschikbaar.", statusCode: 503);
+    }
+});
+
+app.MapPost("/api/versions/{version}/osm-geometry", async (string version, HttpRequest request, HttpClient client, CancellationToken cancellationToken) =>
+{
+    var store = GetReviewStore(version);
+    if (store is null) return Results.NotFound();
+    if (!request.HasJsonContentType() || (request.Headers.Origin.Count > 0 && request.Headers.Origin.ToString() != "http://routing.localtest.me"))
+        return Results.Problem("Invalid request origin or content type.", statusCode: 403);
+    try
+    {
+        await store.GetAsync(cancellationToken);
+        using var response = await client.PostAsync(new Uri(new Uri(brokerUrl), $"geometry/start/{version}"), null, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            return Results.Conflict(new { detail = "Er loopt al een adrescontrole of geometrie-extractie." });
+        if (!response.IsSuccessStatusCode) return Results.Problem("De lokale geometrie kon niet worden gestart.", statusCode: 503);
+        return Results.Accepted($"/api/versions/{version}/osm-geometry/status", new AddressCheckStatus("running"));
+    }
+    catch (FileNotFoundException)
+    {
+        return Results.Problem("Het geocodingrapport ontbreekt.", statusCode: 404);
+    }
+    catch (InvalidDataException exception)
+    {
+        return Results.Problem(exception.Message, statusCode: 409);
+    }
+    catch (JsonException)
+    {
+        return Results.Problem("Het geocodingrapport of de review is ongeldig.", statusCode: 409);
+    }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+    {
+        return Results.Problem("De geometrie-extractie is niet beschikbaar.", statusCode: 503);
+    }
+});
+
 app.MapPost("/api/versions/{version}/review/{csvRecordNumber:int}/search", async (
     string version,
     int csvRecordNumber,

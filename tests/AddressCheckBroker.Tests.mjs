@@ -29,7 +29,7 @@ const docker = createServer((request, response) => {
     return response.end(JSON.stringify({ Id: geometryId, Config: { Labels: {
       'com.docker.compose.project': project, 'com.docker.compose.service': 'extract-osm-geometry',
     } }, State: { Running: geometryState === 'running', Status: geometryState, ExitCode: geometryExitCode,
-      StartedAt: geometryState === 'created' ? 'never' : 'geometry-run-1' } }));
+      StartedAt: geometryState === 'created' ? 'never' : `geometry-run-${geometryStarts}` } }));
   }
   if (request.url === `/containers/${containerId}/start` && request.method === 'POST') {
     starts++;
@@ -85,13 +85,42 @@ test('geometry starts after geocoding and completion waits for it', async () => 
   const deadline = Date.now() + 5000;
   while (geometryStarts === 0 && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(geometryStarts, 1);
+  assert.equal(await readFile('/jobs/geometry-version', 'utf8'), version);
   assert.equal((await (await fetch(broker(`/status/${version}`))).json()).state, 'running');
   geometryState = 'exited';
   assert.equal((await (await fetch(broker(`/status/${version}`))).json()).state, 'completed');
   assert.equal((await (await fetch(broker(`/status/${otherVersion}`))).json()).state, 'idle');
-  geometryExitCode = 1;
-  assert.equal((await (await fetch(broker(`/status/${version}`))).json()).state, 'failed');
+  const savedDeadline = Date.now() + 5000;
+  let savedJob;
+  do {
+    savedJob = JSON.parse(await readFile('/jobs/geometry.json', 'utf8'));
+    if (savedJob.Result !== 'completed') await new Promise(resolve => setTimeout(resolve, 50));
+  } while (savedJob.Result !== 'completed' && Date.now() < savedDeadline);
+  assert.equal(savedJob.Result, 'completed');
+  geometryState = 'created';
+  assert.equal((await (await fetch(broker(`/status/${version}`))).json()).state, 'completed');
+  geometryState = 'exited';
   project = 'other-project';
   assert.equal((await fetch(broker(`/start/${otherVersion}`), { method: 'POST' })).status, 503);
   assert.equal(starts, 1);
+});
+
+test('geometry can be refreshed separately without replacing the address-check version', async () => {
+  project = 'jdc-route-planner';
+  geometryExitCode = 0;
+  assert.equal((await fetch(broker(`/geometry/start/${otherVersion}`), { method: 'POST' })).status, 202);
+  assert.equal(await readFile('/jobs/version', 'utf8'), version);
+  assert.equal(await readFile('/jobs/geometry-version', 'utf8'), otherVersion);
+  assert.equal((await (await fetch(broker(`/geometry/status/${otherVersion}`))).json()).state, 'running');
+  assert.equal((await (await fetch(broker(`/geometry/status/${version}`))).json()).state, 'busy');
+  assert.equal((await fetch(broker(`/geometry/start/${version}`), { method: 'POST' })).status, 409);
+  geometryState = 'exited';
+  geometryExitCode = 1;
+  assert.equal((await (await fetch(broker(`/geometry/status/${otherVersion}`))).json()).state, 'failed');
+  assert.equal((await (await fetch(broker(`/status/${version}`))).json()).state, 'completed');
+  assert.equal((await fetch(broker(`/geometry/start/${otherVersion}`), { method: 'POST' })).status, 202);
+  geometryState = 'exited';
+  geometryExitCode = 0;
+  assert.equal((await (await fetch(broker(`/geometry/status/${otherVersion}`))).json()).state, 'completed');
+  assert.equal((await (await fetch(broker(`/status/${version}`))).json()).state, 'completed');
 });

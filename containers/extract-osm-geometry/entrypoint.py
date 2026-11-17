@@ -38,23 +38,28 @@ def main():
 
     requested = {}
     unidentifiable = []
-    seen_candidates = set()
 
-    def collect_candidates(record_number, candidates, key):
-        for candidate in candidates:
-            candidate_id = candidate.get(key, "")
-            if (record_number, candidate_id) in seen_candidates:
-                continue
-            seen_candidates.add((record_number, candidate_id))
-            match = OBJECT_PATTERN.fullmatch(candidate_id)
-            if not match or int(match.group(2)) > 9223372036854775807:
-                unidentifiable.append({"recordNumber": record_number, "candidateId": candidate_id})
-                continue
-            object_id = f"{match.group(1).upper()}/{match.group(2)}"
-            requested.setdefault(object_id, set()).add(record_number)
+    def collect_candidate(record_number, candidate_id):
+        match = OBJECT_PATTERN.fullmatch(candidate_id)
+        if not match or int(match.group(2)) > 9223372036854775807:
+            unidentifiable.append({"recordNumber": record_number, "candidateId": candidate_id})
+            return
+        object_id = f"{match.group(1).upper()}/{match.group(2)}"
+        requested.setdefault(object_id, set()).add(record_number)
+
+    selected_by_record = {}
 
     for record in report["Results"]:
-        collect_candidates(record["CsvRecordNumber"], record.get("Candidates", []), "CandidateId")
+        if record.get("Status") != "valid":
+            continue
+        selected_coordinates = (record.get("Longitude"), record.get("Latitude"))
+        if None in selected_coordinates:
+            continue
+        for candidate in record.get("Candidates", []):
+            if (candidate.get("GeometryIsValid") and
+                    (candidate.get("Longitude"), candidate.get("Latitude")) == selected_coordinates):
+                selected_by_record[record["CsvRecordNumber"]] = candidate.get("CandidateId", "")
+                break
 
     review_path = Path(os.environ.get("GEOMETRY_REVIEW_DIR", "/review")) / f"address-review{suffix}.json"
     if review_path.is_file():
@@ -63,7 +68,19 @@ def main():
         fingerprint = hashlib.sha256(report_bytes + input_path.read_bytes()).hexdigest().upper()
         if review.get("sourceFingerprint", "").upper() == fingerprint:
             for record in review.get("records", []):
-                collect_candidates(record["csvRecordNumber"], record.get("candidates", []), "candidateId")
+                record_number = record["csvRecordNumber"]
+                selected_by_record.pop(record_number, None)
+                if record.get("decision") not in ("auto_accepted", "accepted"):
+                    continue
+                candidate_id = record.get("selectedCandidateId")
+                candidate = next((item for item in record.get("candidates", [])
+                                  if item.get("candidateId") == candidate_id and item.get("geometryIsValid")
+                                  and item.get("latitude") is not None and item.get("longitude") is not None), None)
+                if candidate is not None:
+                    selected_by_record[record_number] = candidate_id
+
+    for record_number, candidate_id in selected_by_record.items():
+        collect_candidate(record_number, candidate_id)
 
     features_by_id = {}
     found = set()

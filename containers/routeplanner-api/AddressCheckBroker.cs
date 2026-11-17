@@ -9,8 +9,10 @@ public static class AddressCheckBroker
     private const string ContainerName = "jdc-route-planner-check-addresses-1";
     private const string GeometryContainerName = "jdc-route-planner-extract-osm-geometry-1";
     private const string JobFile = "/jobs/version";
+    private const string GeometryVersionFile = "/jobs/geometry-version";
     private const string GeometryJobFile = "/jobs/geometry.json";
     private const string GeometryRequestFile = "/jobs/geometry-request.json";
+    private const string GeometryRefreshFile = "/jobs/geometry-refresh.json";
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
     public static async Task RunAsync()
@@ -79,6 +81,60 @@ public static class AddressCheckBroker
                 Gate.Release();
             }
         });
+        app.MapGet("/geometry/status/{version}", async (string version, CancellationToken cancellationToken) =>
+        {
+            if (!InputCsvStore.IsVersion(version)) return Results.NotFound();
+            await Gate.WaitAsync(cancellationToken);
+            try
+            {
+                var check = await InspectAsync(docker, ContainerName, "check-addresses", cancellationToken);
+                var geometry = await InspectAsync(docker, GeometryContainerName, "extract-osm-geometry", cancellationToken);
+                var selectedVersion = File.Exists(JobFile) ? await File.ReadAllTextAsync(JobFile, cancellationToken) : "";
+                var geometryVersion = File.Exists(GeometryVersionFile) ? await File.ReadAllTextAsync(GeometryVersionFile, cancellationToken) : "";
+                if (geometry.Running) return Results.Ok(new { state = geometryVersion == version ? "running" : "busy" });
+                if (await GetStateAsync(check, geometry, selectedVersion, cancellationToken) == "running") return Results.Ok(new { state = "busy" });
+                var refresh = await ReadGeometryRefreshAsync(cancellationToken);
+                if (refresh?.Version != version || geometryVersion != version) return Results.Ok(new { state = "idle" });
+                return Results.Ok(new { state = geometry.StartedAt != refresh.PreviousGeometryStartedAt && geometry.Started && geometry.ExitCode == 0 ? "completed" : "failed" });
+            }
+            catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException or InvalidDataException or SocketException or UnauthorizedAccessException or TaskCanceledException)
+            {
+                return Results.Problem("The geometry status is unavailable.", statusCode: 503);
+            }
+            finally
+            {
+                Gate.Release();
+            }
+        });
+        app.MapPost("/geometry/start/{version}", async (string version, CancellationToken cancellationToken) =>
+        {
+            if (!InputCsvStore.IsVersion(version)) return Results.NotFound();
+            await Gate.WaitAsync(cancellationToken);
+            try
+            {
+                var check = await InspectAsync(docker, ContainerName, "check-addresses", cancellationToken);
+                var geometry = await InspectAsync(docker, GeometryContainerName, "extract-osm-geometry", cancellationToken);
+                var selectedVersion = File.Exists(JobFile) ? await File.ReadAllTextAsync(JobFile, cancellationToken) : "";
+                var currentState = await GetStateAsync(check, geometry, selectedVersion, cancellationToken);
+                if (currentState == "running") return Results.Conflict(new { detail = "An address check or geometry extraction is already running." });
+                var job = await ReadGeometryJobAsync(cancellationToken);
+                if (job?.Version == selectedVersion && job.CheckStartedAt == check.StartedAt && job.Result is null)
+                    await WriteAtomicallyAsync(GeometryJobFile, job with { Result = currentState }, cancellationToken);
+                await WriteTextAtomicallyAsync(GeometryVersionFile, version, cancellationToken);
+                await WriteAtomicallyAsync(GeometryRefreshFile, new GeometryRefresh(version, geometry.StartedAt), cancellationToken);
+                using var response = await docker.PostAsync($"/containers/{geometry.Id}/start", null, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                return Results.Accepted(value: new { state = "running" });
+            }
+            catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException or InvalidDataException or SocketException or UnauthorizedAccessException or TaskCanceledException)
+            {
+                return Results.Problem("The geometry extraction could not be started.", statusCode: 503);
+            }
+            finally
+            {
+                Gate.Release();
+            }
+        });
         var monitor = MonitorAsync(docker, app.Lifetime.ApplicationStopping);
         await app.RunAsync();
         await monitor;
@@ -111,7 +167,7 @@ public static class AddressCheckBroker
         using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
         try
         {
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            do
             {
                 await Gate.WaitAsync(cancellationToken);
                 try
@@ -124,7 +180,14 @@ public static class AddressCheckBroker
                     if (request?.Version != version || request.PreviousCheckStartedAt == check.StartedAt) continue;
                     var geometry = await InspectAsync(docker, GeometryContainerName, "extract-osm-geometry", cancellationToken);
                     var job = await ReadGeometryJobAsync(cancellationToken);
-                    if (geometry.Running || (job?.Version == version && job.CheckStartedAt == check.StartedAt)) continue;
+                    if (geometry.Running) continue;
+                    if (job?.Version == version && job.CheckStartedAt == check.StartedAt)
+                    {
+                        if (job.Result is null && geometry.Started && geometry.StartedAt != job.PreviousGeometryStartedAt)
+                            await WriteAtomicallyAsync(GeometryJobFile, job with { Result = geometry.ExitCode == 0 ? "completed" : "failed" }, cancellationToken);
+                        continue;
+                    }
+                    await WriteTextAtomicallyAsync(GeometryVersionFile, version, cancellationToken);
                     await WriteAtomicallyAsync(GeometryJobFile, new GeometryJob(version, check.StartedAt, geometry.StartedAt), cancellationToken);
                     using var response = await docker.PostAsync($"/containers/{geometry.Id}/start", null, cancellationToken);
                     response.EnsureSuccessStatusCode();
@@ -136,7 +199,7 @@ public static class AddressCheckBroker
                 {
                     Gate.Release();
                 }
-            }
+            } while (await timer.WaitForNextTickAsync(cancellationToken));
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -153,8 +216,18 @@ public static class AddressCheckBroker
         if (request.PreviousCheckStartedAt == check.StartedAt) return "failed";
         var job = await ReadGeometryJobAsync(cancellationToken);
         if (job?.Version != version || job.CheckStartedAt != check.StartedAt) return "running";
+        if (job.Result is not null)
+        {
+            var refresh = await ReadGeometryRefreshAsync(cancellationToken);
+            var geometryVersion = File.Exists(GeometryVersionFile) ? await File.ReadAllTextAsync(GeometryVersionFile, cancellationToken) : "";
+            if (refresh?.Version == version && geometryVersion == version && geometry.StartedAt != refresh.PreviousGeometryStartedAt && geometry.Started && geometry.ExitCode == 0)
+                return "completed";
+            return job.Result;
+        }
         if (geometry.StartedAt == job.PreviousGeometryStartedAt) return "failed";
-        return geometry.Started && geometry.ExitCode == 0 ? "completed" : "failed";
+        var result = geometry.Started && geometry.ExitCode == 0 ? "completed" : "failed";
+        if (geometry.Started) await WriteAtomicallyAsync(GeometryJobFile, job with { Result = result }, cancellationToken);
+        return result;
     }
 
     private static async Task<GeometryJob?> ReadGeometryJobAsync(CancellationToken cancellationToken)
@@ -169,12 +242,23 @@ public static class AddressCheckBroker
         return JsonSerializer.Deserialize<GeometryRequest>(await File.ReadAllTextAsync(GeometryRequestFile, cancellationToken));
     }
 
+    private static async Task<GeometryRefresh?> ReadGeometryRefreshAsync(CancellationToken cancellationToken)
+    {
+        if (!File.Exists(GeometryRefreshFile)) return null;
+        return JsonSerializer.Deserialize<GeometryRefresh>(await File.ReadAllTextAsync(GeometryRefreshFile, cancellationToken));
+    }
+
     private static async Task WriteAtomicallyAsync<T>(string path, T value, CancellationToken cancellationToken)
+    {
+        await WriteTextAtomicallyAsync(path, JsonSerializer.Serialize(value), cancellationToken);
+    }
+
+    private static async Task WriteTextAtomicallyAsync(string path, string value, CancellationToken cancellationToken)
     {
         var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {
-            await File.WriteAllTextAsync(temporaryPath, JsonSerializer.Serialize(value), cancellationToken);
+            await File.WriteAllTextAsync(temporaryPath, value, cancellationToken);
             File.Move(temporaryPath, path, true);
         }
         finally
@@ -204,6 +288,7 @@ public static class AddressCheckBroker
     }
 
     private sealed record ContainerState(string Id, bool Running, bool Started, int ExitCode, string StartedAt);
-    private sealed record GeometryJob(string Version, string CheckStartedAt, string PreviousGeometryStartedAt);
+    private sealed record GeometryJob(string Version, string CheckStartedAt, string PreviousGeometryStartedAt, string? Result = null);
     private sealed record GeometryRequest(string Version, string PreviousCheckStartedAt);
+    private sealed record GeometryRefresh(string Version, string PreviousGeometryStartedAt);
 }

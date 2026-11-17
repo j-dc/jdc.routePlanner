@@ -35,8 +35,13 @@ export interface MapLocation {
         <span class="location-count">{{ locations.length }} op kaart</span>
       </header>
       <p class="map-warning" *ngIf="missingCount" role="alert">{{ missingCount }} leveringen hebben geen bruikbare bevestigde coördinaten.</p>
-      <p class="map-warning" *ngIf="geometryError" role="status">{{ geometryError }}</p>
-      <p class="map-warning" *ngIf="!geometryError && missingContours" role="status">Voor {{ missingContours }} leveringen is geen lokale contour beschikbaar.</p>
+      <div class="geometry-notice" *ngIf="geometryError || missingContours || geometryRunning || geometryBusy" role="status">
+        <span *ngIf="geometryRunning">Lokale geometrie wordt geladen...</span>
+        <span *ngIf="!geometryRunning && geometryBusy">Er loopt al een andere verwerking.</span>
+        <span *ngIf="!geometryRunning && !geometryBusy && geometryError">{{ geometryError }}</span>
+        <span *ngIf="!geometryRunning && !geometryBusy && !geometryError && missingContours">Voor {{ missingContours }} leveringen is geen lokale contour beschikbaar.</span>
+        <button *ngIf="!geometryRunning && !geometryBusy" type="button" (click)="refreshGeometry()" [disabled]="geometryStarting">{{ geometryStarting ? 'Starten...' : 'Laad de lokale geometrie' }}</button>
+      </div>
       <div class="map-body">
         <div #mapTarget class="map" tabindex="0" aria-label="Kaart met bevestigde leverlocaties"></div>
         <aside class="selection-panel" *ngIf="selectedLocations.length" aria-label="Geselecteerde leveringen">
@@ -64,6 +69,9 @@ export interface MapLocation {
     .selection-panel li { display: grid; gap: 4px; padding: 11px 0; border-top: 1px solid var(--line); overflow-wrap: anywhere; font-size: 12px; }
     .selection-panel li strong { color: var(--muted); font-size: 11px; }
     .map-warning { padding: 10px 12px; color: var(--red); background: var(--red-pale); font-size: 13px; }
+    .geometry-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 14px; padding: 10px 12px; color: var(--red); background: var(--red-pale); font-size: 13px; }
+    .geometry-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--forest); border-radius: 5px; background: var(--forest); color: white; font-weight: 700; }
+    .geometry-notice button:disabled { cursor: not-allowed; opacity: 0.55; }
     .map-empty { color: var(--muted); font-size: 13px; }
     @media (max-width: 680px) {
       .map-body { grid-template-columns: 1fr; }
@@ -81,10 +89,16 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
 
   selectedLocations: MapLocation[] = [];
   geometryError = '';
+  geometryRunning = false;
+  geometryBusy = false;
+  geometryStarting = false;
   missingContours = 0;
   private readonly source = new VectorSource<Feature<Point>>();
   private readonly geometrySource = new VectorSource();
   private geometrySubscription: Subscription | null = null;
+  private statusSubscription: Subscription | null = null;
+  private startSubscription: Subscription | null = null;
+  private statusTimer: ReturnType<typeof setTimeout> | null = null;
   private geometryData: object | null = null;
   private map: Map | null = null;
 
@@ -123,6 +137,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     });
     this.updateLocations();
     this.loadGeometry();
+    this.checkGeometryStatus(true);
   }
 
   ngOnChanges(): void {
@@ -134,6 +149,9 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
 
   ngOnDestroy(): void {
     this.geometrySubscription?.unsubscribe();
+    this.statusSubscription?.unsubscribe();
+    this.startSubscription?.unsubscribe();
+    if (this.statusTimer !== null) clearTimeout(this.statusTimer);
     this.map?.setTarget(undefined);
     this.map = null;
   }
@@ -167,6 +185,61 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
           : 'Lokale OSM-geometrie kon niet worden geladen.';
       },
     });
+  }
+
+  refreshGeometry(): void {
+    if (this.geometryStarting || this.geometryRunning || this.geometryBusy) return;
+    this.statusSubscription?.unsubscribe();
+    if (this.statusTimer !== null) clearTimeout(this.statusTimer);
+    this.geometryStarting = true;
+    this.startSubscription = this.http.post<{ state: string }>(`${environment.reviewApiUrl}/api/versions/${this.version}/osm-geometry`, {}).subscribe({
+      next: () => {
+        this.geometryStarting = false;
+        this.geometryRunning = true;
+        this.scheduleGeometryStatus();
+      },
+      error: error => {
+        this.geometryStarting = false;
+        const detail = error instanceof HttpErrorResponse ? error.error?.detail : null;
+        this.geometryError = typeof detail === 'string' ? detail : 'Lokale OSM-geometrie kon niet worden geladen.';
+        if (error instanceof HttpErrorResponse && error.status === 409) this.checkGeometryStatus(false);
+      },
+    });
+  }
+
+  private checkGeometryStatus(initial: boolean): void {
+    this.statusSubscription?.unsubscribe();
+    this.statusSubscription = this.http.get<{ state: string }>(`${environment.reviewApiUrl}/api/versions/${this.version}/osm-geometry/status`).subscribe({
+      next: status => {
+        if (status.state === 'running') {
+          this.geometryRunning = true;
+          this.geometryBusy = false;
+          this.scheduleGeometryStatus();
+        } else if (status.state === 'busy') {
+          this.geometryRunning = false;
+          this.geometryBusy = true;
+          this.scheduleGeometryStatus();
+        } else {
+          const wasRunning = this.geometryRunning;
+          this.geometryRunning = false;
+          this.geometryBusy = false;
+          if (status.state === 'completed' && (wasRunning || (initial && this.geometryError))) this.loadGeometry();
+          if (status.state === 'failed' && (wasRunning || this.geometryError)) this.geometryError = 'Lokale OSM-geometrie kon niet worden geladen.';
+        }
+      },
+      error: () => {
+        if (this.geometryRunning || this.geometryBusy) {
+          this.geometryRunning = false;
+          this.geometryBusy = false;
+          this.geometryError = 'De status van de lokale geometrie is niet beschikbaar.';
+        }
+      },
+    });
+  }
+
+  private scheduleGeometryStatus(): void {
+    if (this.statusTimer !== null) clearTimeout(this.statusTimer);
+    this.statusTimer = setTimeout(() => this.checkGeometryStatus(false), 2000);
   }
 
   private updateGeometry(): void {
