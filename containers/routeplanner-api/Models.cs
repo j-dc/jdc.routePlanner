@@ -1,8 +1,12 @@
 namespace RoutePlanner.Api;
 
+/// <summary>Current state of the automatic address check.</summary>
+public sealed record AddressCheckStatus(string State);
+
 public sealed record AddressCheckReport
 {
     public DateTimeOffset CreatedAtUtc { get; init; }
+    public string? InputSha256 { get; init; }
     public int TotalRecords { get; init; }
     public List<AddressCheckResult> Results { get; init; } = [];
 }

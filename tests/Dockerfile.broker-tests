@@ -1,0 +1,4 @@
+FROM node:26.13.1-bookworm-slim AS node
+FROM jdc-route-planner-routeplanner-api
+COPY --from=node /usr/local/bin/node /usr/local/bin/node
+COPY --from=node /usr/lib/x86_64-linux-gnu/libatomic.so.1 /usr/lib/x86_64-linux-gnu/libatomic.so.1

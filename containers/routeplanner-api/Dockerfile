@@ -9,7 +9,7 @@ FROM mcr.microsoft.com/dotnet/aspnet:11.0.0-resolute-amd64 AS runtime
 WORKDIR /app
 COPY --from=build /app/publish ./
 USER root
-RUN mkdir -p /review && chown app:app /review
+RUN mkdir -p /review /jobs && chown app:app /review && chmod 1777 /jobs
 ENV ASPNETCORE_URLS=http://0.0.0.0:8080 \
     DOTNET_EnableDiagnostics=0
 EXPOSE 8080

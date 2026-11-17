@@ -48,6 +48,7 @@ services:
     environment:
       CHECK_ADDRESSES_INPUT: /private/input/ritten.csv
       CHECK_ADDRESSES_REPORT: /private/output/address-check.json
+      CHECK_ADDRESSES_VERSION_FILE: /jobs/version
       GEOCODER_BASE_URL: http://photon:2322/api/
       HOME: /tmp
       POWERSHELL_TELEMETRY_OPTOUT: "1"
@@ -59,6 +60,54 @@ services:
       - type: bind
         source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
         target: /private/output
+      - type: volume
+        source: address-check-jobs
+        target: /jobs
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  extract-osm-geometry:
+    build:
+      context: .
+      dockerfile: containers/extract-osm-geometry/Dockerfile
+    environment:
+      CHECK_ADDRESSES_VERSION_FILE: /jobs/version
+      GEOMETRY_REPORT_DIR: /source
+      GEOMETRY_OUTPUT_DIR: /output
+      GEOMETRY_INPUT_DIR: /input
+      GEOMETRY_REVIEW_DIR: /review
+      OSM_PBF_PATH: /osm/belgium-latest.osm.pbf
+    volumes:
+      - type: bind
+        source: ${OSM_DATA_DIR:-../jdc.routePlanner-private-data/osm}
+        target: /osm
+        read_only: true
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /source
+        read_only: true
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /output
+      - type: bind
+        source: ${INPUT_DATA_DIR:-../jdc.routePlanner-private-data/input}
+        target: /input
+        read_only: true
+      - type: volume
+        source: review-data
+        target: /review
+        read_only: true
+      - type: volume
+        source: address-check-jobs
+        target: /jobs
+        read_only: true
+    network_mode: none
     read_only: true
     tmpfs:
       - /tmp
@@ -128,6 +177,29 @@ services:
       - ALL
     restart: unless-stopped
 
+  address-check-broker:
+    image: jdc-route-planner-routeplanner-api
+    command: ["--address-check-broker"]
+    group_add:
+      - "${DOCKER_SOCKET_GID:-0}"
+    volumes:
+      - type: bind
+        source: /var/run/docker.sock
+        target: /var/run/docker.sock
+      - type: volume
+        source: address-check-jobs
+        target: /jobs
+    networks:
+      - orchestration
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
   routeplanner-api:
     build:
       context: .
@@ -136,6 +208,7 @@ services:
       Review__SourceReportPath: /source/address-check.json
       Review__InputCsvPath: /input/ritten.csv
       Review__ReviewFilePath: /review/address-review.json
+      AddressCheck__BrokerUrl: http://address-check-broker:8081/
     volumes:
       - type: bind
         source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
@@ -144,12 +217,16 @@ services:
       - type: bind
         source: ${INPUT_DATA_DIR:-../jdc.routePlanner-private-data/input}
         target: /input
-        read_only: true
       - type: volume
         source: review-data
         target: /review
     expose:
       - "8080"
+    depends_on:
+      - address-check-broker
+    networks:
+      - default
+      - orchestration
     healthcheck:
       test: ["CMD", "dotnet", "RoutePlanner.Api.dll", "--health-check"]
       interval: 10s
@@ -166,6 +243,11 @@ services:
     restart: unless-stopped
 
 volumes:
+  address-check-jobs:
   review-data:
     external: true
     name: jdc-route-planner-review-data
+
+networks:
+  orchestration:
+    internal: true

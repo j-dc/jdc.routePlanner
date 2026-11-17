@@ -14,13 +14,41 @@ rit;naam;straat;nr.;postcode;gemeente;aantal;bellen;Opmerking;opmerking;klas
 
 ### Locatie en privacy
 
-Plaats het inputbestand op dit pad, relatief vanaf de repository-root en buiten de projectmap en Git-repository:
+Nieuwe invoerversies worden opgeslagen op dit pad, relatief vanaf de repository-root en buiten de projectmap en Git-repository:
 
 ```text
-../jdc.routePlanner-private-data/input/ritten.csv
+../jdc.routePlanner-private-data/input/ritten-<UTC-tijdstempel>.csv
 ```
 
-De map met private data mag geen onderdeel worden van deze repository of VS Code-workspace. `ritten.csv` bevat GDPR-gevoelige gegevens: kopieer het bestand niet naar de projectmap, testfixtures, logs of prompts. Geef de container die de invoer nodig heeft uitsluitend toegang via een expliciet geconfigureerde read-only mount; het pad binnen de container wordt door die mount bepaald. Bewaar ook rapporten, kaarten en adressenlijsten met persoonsgegevens buiten de repository.
+De map met private data mag geen onderdeel worden van deze repository of VS Code-workspace. De CSV-bestanden bevatten GDPR-gevoelige gegevens: kopieer ze niet naar de projectmap, testfixtures, logs of prompts. De adrescontrole krijgt de invoermap read-only; de API krijgt alleen deze invoermap schrijfbaar om het gekozen bestand op te slaan. Bewaar ook rapporten, kaarten en adressenlijsten met persoonsgegevens buiten de repository.
+
+Open `http://routing.localtest.me` na het starten van de services en kies **Nieuwe versie**. Selecteer een UTF-8-CSV met een kopregel (maximaal 10 MB). Het bronbestand wordt uitsluitend lokaal in de browser gelezen; selecteer de vier adreskolommen en bekijk de eerste tien leveringen. Alleen de omgezette CSV wordt via de lokale API verzonden. Kolommen met exact overeenkomende namen uit het schema blijven behouden, inclusief `Opmerking` en `opmerking`; ontbrekende overige velden blijven leeg en niet-herkende kolommen worden niet meegenomen. Invoer met ontbrekende adresvelden of foutieve rijen wordt niet opgeslagen. Iedere opslag maakt atomair een nieuw bestand met een unieke UTC-sleutel in het formaat `yyyyMMddTHHmmssfffffffZ`; eerdere bestanden blijven behouden. De API geeft de beschikbare sleutels via `GET /api/versions`, gebaseerd op de invoerbestanden. Het menu toont de tijd in de lokale tijdzone en ook de exacte UTC-sleutel. Een bestaand `ritten.csv` verschijnt als **Bestaande invoer** met sleutel `legacy`, zonder migratie of wijziging.
+
+De opslag start de adrescontrole niet. Kies de versie en klik bij Geocoding op **Voer nu uit...**. De API controleert of Photon beschikbaar is en vraagt de interne broker om de voorbereide `check-addresses`-container te starten. Na een geslaagde adrescontrole start de broker automatisch de aparte `extract-osm-geometry`-container. De taak blijft lopen totdat ook de geometrie is verwerkt; daarna wordt de review automatisch geladen. Er kan maar één automatische adrescontrole tegelijk lopen. Exitcode `2` van de adrescontrole betekent dat een rapport met te beoordelen adressen is gemaakt en de geometrie alsnog wordt opgehaald; fouten in de geocoder of geometrie-extractie worden gemeld en kunnen opnieuw worden geprobeerd. De status blijft via de containerstatus en het taakvolume beschikbaar na een API- of brokerherstart.
+
+De geometriecontainer leest de lokale PBF uit `OSM_DATA_DIR` read-only en haalt alle OSM-ID's uit het geocodingrapport met `osmium getid` en `osmium export`. Referenties worden uit hetzelfde bestand opgehaald; er is geen netwerktoegang. Ze bewaart `osm-geometry-<sleutel>.geojson` naast het rapport in `OUTPUT_DATA_DIR` (voor `legacy`: `osm-geometry.geojson`). De lokale API levert dit via `GET /api/versions/<sleutel>/osm-geometry` en weigert een bestand dat niet bij het actuele rapport hoort. In `metadata` staan ontbrekende objecten en kandidaten zonder bruikbare OSM-ID, inclusief hun CSV-recordnummers. Een OSM-node blijft een punt; niet iedere node heeft een gekoppelde gebouwcontour. Niet-multipolygonrelaties en onvolledige of ontbrekende geometrieën worden als ontbrekend gemeld. De Photon-dump en de lokale PBF kunnen van verschillende momenten zijn. Handmatig later in Photon gevonden kandidaten zijn niet opgenomen in deze eerste extractie en kunnen daarom een ontbrekende contour tonen.
+
+Voor een bestaande versie met een geocodingrapport kan de geometrie afzonderlijk worden gemaakt of na een PBF-update worden vernieuwd, zonder de review te vervangen:
+
+```powershell
+docker compose -f compose.yaml run --rm --no-deps -e CHECK_ADDRESSES_VERSION=20261117T1234561234567Z extract-osm-geometry
+```
+
+De adrescontrole kan ook handmatig met de sleutel uit het versiemenu worden gestart, bijvoorbeeld:
+
+```powershell
+./scripts/checkAddresses.ps1 -Version '20261117T1234561234567Z'
+```
+
+Zonder `-Version` controleert de launcher uitsluitend de oudere `legacy`-invoer. Kies daarna dezelfde versie in de website om haar geocodingreview te openen.
+
+De API draait als niet-rootgebruiker en moet in de geconfigureerde `INPUT_DATA_DIR` bestanden kunnen aanmaken. De integratietests in `tests/InputCsv.Api.Tests.mjs` gebruiken Node.js 26.13.1 en een afzonderlijke API-container met uitsluitend tijdelijke, schrijfbare testmappen voor `/input`, `/source` en `/review`; koppel de echte privémappen nooit aan deze test. De testcontainer deelt het netwerk en dezelfde tijdelijke bind mounts voor `/input` en `/source`, en voert `node --test` uit. `tests/PhotonStub.mjs` biedt een lokale stub voor een geïsoleerde adrescontroletest.
+
+De automatische start vereist toegang tot de Docker-daemon. Alleen `address-check-broker` krijgt `/var/run/docker.sock`; de API bereikt de broker via een apart intern netwerk, zonder gepubliceerde brokerpoort. De broker accepteert alleen geldige versies en controleert de Compose-project- en servicelabels voordat hij de vaste containers `jdc-route-planner-check-addresses-1` en `jdc-route-planner-extract-osm-geometry-1` start. Overschrijf daarom de Compose-projectnaam niet. De broker en de twee jobs delen uitsluitend het beheerde volume `address-check-jobs` voor de versiesleutel; beide jobs mounten dit read-only. `start.ps1` en `reviewAddresses.ps1` maken beide jobcontainers vooraf aan zonder deze te starten. Photon en de overige services blijven draaien na afloop.
+
+**Beveiliging:** toegang tot de Docker-socket is in de praktijk gelijkwaardig aan beheerderstoegang tot de Docker-host, ook bij een niet-rootcontainer. Gebruik deze configuratie alleen op een vertrouwde lokale machine, scherm de lokale API af voor onbevoegden en publiceer de broker nooit extern. De socket moet lokaal op `/var/run/docker.sock` beschikbaar zijn. Docker Desktop gebruikt doorgaans socketgroep `0`; stel op Linux `DOCKER_SOCKET_GID` in op de numerieke groep die schrijfrechten op de socket heeft. Een externe Docker-daemon wordt niet ondersteund. De broker heeft geen directe toegang nodig tot de invoer- of rapportmappen.
+
+De broker-integratietests in `tests/AddressCheckBroker.Tests.mjs` gebruiken een nep-Docker-socket en synthetische gegevens. Bouw hiervoor eerst de API-image en vervolgens `tests/Dockerfile.broker-tests`; die testimage gebruikt een Debian Node-build omdat Node in de niet-Alpine .NET-runtime moet kunnen draaien. Koppel nooit de echte Docker-socket aan deze test.
 
 ## Entrypoints
 
@@ -31,7 +59,8 @@ De namen hieronder zijn de container-entrypoints. `CheckAddresses`, `UpdateGeoco
 | `FetchOsm` | Eenmalig of bij handmatig verversen | Downloadt het Geofabrik België-extract dat West-Vlaanderen omvat, controleert de MD5 en bewaart de brondata in beheerde opslag. |
 | `BuildValhallaTiles` | Eenmalig of na wijzigingen aan data/configuratie | Bouwt of ververst Valhalla-tegels uit het OSM-extract. |
 | `UpdateGeocodeDatabase` | Eenmalig en bij een databaseresfresh | Downloadt de officiële Photon Europa-dump, controleert de checksum en importeert alleen landcode `BE` naar een nieuwe lokale database. |
-| `CheckAddresses` | Voor iedere planning | Valideert de exacte CSV-header en rijen en geocodeert via Photon op het interne Compose-netwerk; dedupliceert identieke aanvragen, herhaalt tijdelijke fouten begrensd en accepteert alleen unieke exacte adresmatches. Overige kandidaten en foutredenen komen in het rapport voor handmatige controle. |
+| `CheckAddresses` | Voor iedere planning | Wordt handmatig of via API en interne broker per versie gestart. Valideert de exacte CSV-header en rijen en geocodeert via Photon op het interne Compose-netwerk; dedupliceert identieke aanvragen, herhaalt tijdelijke fouten begrensd en accepteert alleen unieke exacte adresmatches. Overige kandidaten en foutredenen komen in het rapport voor handmatige controle. |
+| `extract-osm-geometry` | Na iedere adrescontrole | De Python-entrypoint haalt kandidaatobjecten en hun referenties uit de lokale PBF met Osmium en bewaart geometrieën en ontbrekende objecten als versiegebonden GeoJSON. De container heeft geen netwerktoegang. |
 | `ReviewAddresses` | Na iedere geocodingrun | Toont het bronadres en Photon-kandidaten in een lokale Angular-website. De .NET API bewaart bevestigde kandidaatkeuzes en coördinaten, of een onopgeloste beslissing met notitie. |
 | `CreateRoutes` | Voor iedere planning | Valideert de gekozen ritten- of chauffeursaantallen, gebruikt Valhalla-kosten om leveringen toe te wijzen en te ordenen, en maakt de definitieve routegegevens. Iedere geselecteerde chauffeur krijgt werk; de totale afstand wordt geminimaliseerd. |
 | `CreateDriverOutputs` | Na het maken van de routes | Maakt per chauffeur een OSM-kaart van de route en een adressenlijst in de exacte stopvolgorde. |
@@ -45,11 +74,15 @@ De Photon-updater logt de huidige fase naar de containeruitvoer. Tijdens downloa
 
 De adrescontrole gebruikt de gedeelde PowerShell-base-image uit `containers/powershell/Dockerfile`: Alpine 3.24.3 met de officiële PowerShell 7.6.6 musl-x64-archive. De SHA256 wordt vóór installatie gecontroleerd. De base ondersteunt momenteel `amd64`. De Photon-container gebruikt ook Alpine 3.24.3, met Bash en Java 21; de Photon-entrypoint is `containers/photon/entrypoint.sh`.
 
-Voer eerst `./scripts/setup.ps1` uit. Setup bouwt alle images uit `compose.yaml` en `compose.setup.yaml`, haalt de Traefik-image op en controleert daarna het OSM-extract en de Belgische Photon-index. Ontbrekende datasets worden automatisch opgehaald; bestaande datasets blijven zonder prompt behouden. Gebruik `./scripts/setup.ps1 --force` (of PowerShell-native `./scripts/setup.ps1 -Force`) om bestaande OSM- en Photondata te verversen. Setup start geen services. `./scripts/start.ps1` start Photon, de reviewwebsite, API en Traefik samen uit `compose.yaml` met `--no-build --pull never --detach`, zonder op healthchecks te wachten. De overige scripts bouwen of pullen geen images; voer setup opnieuw uit als een image is gewijzigd. `./scripts/checkAddresses.ps1` wacht wel op een gezonde Photon-service voordat de adrescontrole wordt uitgevoerd en stopt Photon na afloop als deze launcher hem zelf heeft gestart. De input wordt read-only gemount vanaf `../jdc.routePlanner-private-data/input`; het rapport wordt geschreven naar `../jdc.routePlanner-private-data/output/address-check.json`. Deze paden zijn relatief aan de repository-root en kunnen met `INPUT_DATA_DIR`, `OUTPUT_DATA_DIR` en `GEOCODER_DATA_DIR` worden aangepast. De exitcode van de adrescontrole is `0` wanneer alle adressen eenduidig zijn gevonden, `2` bij ongeldige/onopgeloste/ambigue records en `3` bij een geocoderfout. Configuratie- en inputfouten geven exitcode `1`.
+Voer eerst `./scripts/setup.ps1` uit. Setup bouwt alle images uit `compose.yaml` en `compose.setup.yaml`, haalt de Traefik-image op en controleert daarna het OSM-extract en de Belgische Photon-index. Ontbrekende datasets worden automatisch opgehaald; bestaande datasets blijven zonder prompt behouden. Gebruik `./scripts/setup.ps1 --force` (of PowerShell-native `./scripts/setup.ps1 -Force`) om bestaande OSM- en Photondata te verversen. Setup start geen services. `./scripts/start.ps1` start Photon, de reviewwebsite, API en Traefik samen uit `compose.yaml` met `--no-build --pull never --detach`, zonder op healthchecks te wachten. De overige scripts bouwen of pullen geen images; voer setup opnieuw uit als een image is gewijzigd. `./scripts/checkAddresses.ps1 -Version <sleutel>` wacht wel op een gezonde Photon-service voordat de adrescontrole wordt uitgevoerd en stopt Photon na afloop als deze launcher hem zelf heeft gestart. De input wordt read-only gemount vanaf `../jdc.routePlanner-private-data/input`; het rapport wordt geschreven naar `../jdc.routePlanner-private-data/output/address-check-<sleutel>.json`. De oudere `legacy`-versie gebruikt `ritten.csv` en `address-check.json`. Deze paden zijn relatief aan de repository-root en kunnen met `INPUT_DATA_DIR`, `OUTPUT_DATA_DIR` en `GEOCODER_DATA_DIR` worden aangepast. De exitcode van de adrescontrole is `0` wanneer alle adressen eenduidig zijn gevonden, `2` bij ongeldige/onopgeloste/ambigue records en `3` bij een geocoderfout. Configuratie- en inputfouten geven exitcode `1`.
 
-Voer na `./scripts/checkAddresses.ps1` `./scripts/reviewAddresses.ps1` uit. De website is beschikbaar op `http://routing.localtest.me`, de API op `http://routing-api.localtest.me` en Photon op `http://photon.localtest.me`. Traefik gebruikt een statische configuratie zonder Docker-socket en publiceert alleen op `127.0.0.1:80`; `localtest.me` resolveert naar localhost. Poort 80 moet vrij zijn. De API krijgt de CSV en het geocodingrapport read-only, en schrijft uitsluitend naar de beheerde Docker-volume `jdc-route-planner-review-data`. De review staat daar als `/review/address-review.json`; eerdere reviews worden gearchiveerd wanneer het bronrapport of de CSV verandert. De CSV-rij is de enige reviewidentiteit; `rit` wordt niet als sleutel of reviewlabel gebruikt omdat routegroepen later kunnen wijzigen. De review bevat per CSV-rij de beslissing, gekozen kandidaat en bevestigde coördinaten. Records die onopgelost blijven blokkeren de volgende planningsstap. Latere plannercontainers moeten deze volume read-only mounten en alleen geaccepteerde records gebruiken.
+Voer na `./scripts/checkAddresses.ps1` `./scripts/reviewAddresses.ps1` uit. De website is beschikbaar op `http://routing.localtest.me`, de API op `http://routing-api.localtest.me` en Photon op `http://photon.localtest.me`. Traefik gebruikt een statische configuratie zonder Docker-socket en publiceert alleen op `127.0.0.1:80`; `localtest.me` resolveert naar localhost. Poort 80 moet vrij zijn. De API leest het geocodingrapport read-only, schrijft de invoer in de apart gemounte invoermap en bewaart de review in de beheerde Docker-volume `jdc-route-planner-review-data`. Per versie staat de review daar als `/review/address-review-<sleutel>.json`; voor `legacy` blijft dit `/review/address-review.json`. Eerdere reviews worden gearchiveerd wanneer het bijbehorende bronrapport of de CSV verandert. Nieuwe geocodingrapporten bevatten een SHA-256 van de invoer, zodat review van een verouderd rapport wordt geweigerd. Oudere rapporten zonder hash worden gecontroleerd op basis van bestandswijzigingstijden. De CSV-rij is de enige reviewidentiteit binnen een versie; `rit` wordt niet als sleutel of reviewlabel gebruikt omdat routegroepen later kunnen wijzigen. De review bevat per CSV-rij de beslissing, gekozen kandidaat en bevestigde coördinaten. Records die onopgelost blijven blokkeren de volgende planningsstap. Latere plannercontainers moeten deze volume read-only mounten en alleen geaccepteerde records gebruiken.
 
-De reviewwebsite gebruikt Angular 21 en Node 24. Open de repository in de `.devcontainer`; npm-installatie en Angular-ontwikkeling draaien daar, niet op de host. De API target .NET 11. De officiële .NET 11-images zijn voor deze runtime niet als Alpine-tags gepubliceerd; daarom gebruikt de API de gepinde `11.0.100-resolute-amd64` SDK- en `11.0.0-resolute-amd64` runtime-images.
+Na een volledig afgeronde review toont **Routeplanning** met OpenLayers alle bevestigde leverlocaties en beschikbare lokale objectcontouren op een OpenStreetMap-kaart. Samenvallende locaties worden gegroepeerd en zijn aanklikbaar; ontbrekende coördinaten en contouren worden gemeld. Dit is een locatieoverzicht, nog geen routeberekening. De achtergrondtegels komen momenteel rechtstreeks van de publieke OpenStreetMap-tegelserver, niet uit de lokale PBF; de browser deelt daarbij zijn IP-adres en het bekeken kaartgebied met die server. De adressen en coördinaten zelf worden niet als adreszoekopdracht verzonden. Voor volledig lokale kaartweergave is een eigen tegelservice nodig.
+
+De geometriecontainer gebruikt Ubuntu 24.04 met `python3` en `osmium-tool`, omdat de gewenste Osmium-binary niet als `osmium-tool`-pakket in de bestaande Alpine 3.24-pakketindex beschikbaar is. De aparte Python-entrypoint verwerkt alleen de geselecteerde kandidaatobjecten; de PBF wordt hierbij gelezen maar niet aangepast. De Osmium-extractie kan bij veel of complexe relaties tijdelijk ruimte in `/tmp` nodig hebben. De synthetische test `tests/ExtractOsmGeometry.Tests.py` gebruikt een zelfgemaakte PBF en vereist geen netwerk of privégegevens.
+
+De reviewwebsite gebruikt Angular 21 en Node.js 26.13.1. Open de repository in de `.devcontainer`; npm-installatie en Angular-ontwikkeling draaien daar, niet op de host. De API target .NET 11. De officiële .NET 11-images zijn voor deze runtime niet als Alpine-tags gepubliceerd; daarom gebruikt de API de gepinde `11.0.100-resolute-amd64` SDK- en `11.0.0-resolute-amd64` runtime-images.
 
 De rijvolgorde binnen iedere bestaande `rit`-groep geldt als de stopvolgorde voor de baseline, omdat de CSV geen aparte stopvolgordekolom bevat. Beide plannen moeten met dezelfde Valhalla-versie, tegels, costing-profiel en regels voor start- en eindpunten worden doorgerekend. Zo is het verschil in totale kilometers vergelijkbaar.
 
@@ -82,16 +115,26 @@ flowchart TD
 	end
 
 	subgraph Planning["Per planningsrun"]
+		V["Gebruiker kiest een versie of Nieuwe versie"] --> VV{"Nieuwe versie?"}
+		VV -- Ja --> U["Browser leest nieuwe bron-CSV lokaal, toont preview en zet gekozen kolommen om"]
+		VV -- Nee --> B1a
+		U --> U1["API bewaart nieuwe CSV met unieke UTC-versiesleutel"]
+		U1 --> B1a["Gebruiker start adrescontrole vanuit de wizard"]
+		B1a --> B1b["API controleert Photon; interne broker start voorbereide container"]
+		B1b --> F
 		S["Host start een dunne planner-launcher"] --> C1["Launcher voert docker compose up uit"]
 		C1 --> C["PowerShell-plannercontainer leest adressen, chauffeurs en aantallen in"]
 		C --> D["Invoer en aantallen valideren in container"]
 		D --> E{"Adressen al coördinaten?"}
-		E -- Nee --> F["Geocoder-container verwerkt adressen"]
+		E -- Nee --> F["Adrescontrolecontainer verwerkt gekozen versie via Photon"]
 		E -- Ja --> G["Locaties vaststellen"]
-		F --> G
-		G --> R["Gebruiker beoordeelt Photon-resultaten op routing.localtest.me"]
-		R --> R2["Review API bewaart address-review.json buiten de repository"]
-		R2 --> H
+		F --> GEO["Aparte Python-container haalt kandidaatobjecten uit lokale OSM-PBF"]
+		GEO --> GEO2["Bewaar versiegebonden GeoJSON en ontbrekende objecten"]
+		GEO2 --> G
+		G --> R["API meldt taakstatus; gebruiker beoordeelt Photon-resultaten op routing.localtest.me"]
+		R --> R2["Review API bewaart review per versiesleutel buiten de repository"]
+		R2 --> R3["OpenLayers toont bevestigde locaties en lokale contouren op OSM-kaart"]
+		R3 --> H
 		H --> I["Plannercontainer start benodigde services en controleert gereedheid"]
 		I --> J["Valhalla-container berekent afstanden van bestaande ritten per rit-kolom"]
 		I --> K["Valhalla-container levert kosten voor de optimalisatie"]
@@ -106,5 +149,6 @@ flowchart TD
 
 	B -. "beschikbare tegels" .-> H
 	E2 -. "actieve Belgische Photon-index" .-> F
+	B1 -. "lokale OSM-PBF" .-> GEO
 	S5 -. "Photon bereikbaar op photon.localtest.me" .-> F
 ```

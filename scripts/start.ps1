@@ -44,6 +44,11 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Could not start the services. Run .\scripts\setup.ps1 to build the required images first.'
 }
 
+& docker @composeArguments up --no-build --pull never --no-start --no-deps check-addresses extract-osm-geometry
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not prepare the address-check container.'
+}
+
 Write-Output 'Services are starting in the background.'
 Write-Output 'Review website: http://routing.localtest.me'
 Write-Output 'Review API: http://routing-api.localtest.me'

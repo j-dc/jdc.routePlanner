@@ -13,23 +13,81 @@
     </div>
   </header>
 
+  <div class="version-bar">
+    <label for="version-select">Planningsversie</label>
+    <select id="version-select" [ngModel]="selectedVersion" (ngModelChange)="selectVersion($event)" [disabled]="versionsLoading || uploading || loading || saving || searching || checkStarting">
+      <option value="new">Nieuwe versie</option>
+      <option *ngFor="let version of versions" [value]="version">{{ versionLabel(version) }}</option>
+    </select>
+    <span class="version-key" *ngIf="selectedVersion !== 'new' && selectedVersion !== 'legacy'">{{ selectedVersion }}</span>
+  </div>
+  <div class="notice error-notice" *ngIf="versionError" role="alert">{{ versionError }}</div>
+
   <nav class="wizard-progress" aria-label="Planningsstappen">
     <ol>
-      <li class="wizard-step placeholder-step" aria-disabled="true">
-        <span class="step-number">1</span>
-        <span class="step-copy"><strong>Invoer</strong><small>Placeholder</small></span>
+      <li class="wizard-step" [class.active-step]="step === 'input'">
+        <button type="button" class="step-button" (click)="showStep('input')" [attr.aria-current]="step === 'input' ? 'step' : null">
+          <span class="step-number">1</span>
+          <span class="step-copy"><strong>Invoer</strong><small>CSV selecteren</small></span>
+        </button>
       </li>
-      <li class="wizard-step active-step" aria-current="step">
-        <span class="step-number">2</span>
-        <span class="step-copy"><strong>Geocoding</strong><small>Locaties beoordelen</small></span>
+      <li class="wizard-step" [class.active-step]="step === 'review'">
+        <button type="button" class="step-button" (click)="showStep('review')" [disabled]="selectedVersion === 'new'" [attr.aria-current]="step === 'review' ? 'step' : null">
+          <span class="step-number">2</span>
+          <span class="step-copy"><strong>Geocoding</strong><small>Locaties beoordelen</small></span>
+        </button>
       </li>
-      <li class="wizard-step placeholder-step" aria-disabled="true">
-        <span class="step-number">3</span>
-        <span class="step-copy"><strong>Routeplanning</strong><small>Placeholder</small></span>
+      <li class="wizard-step" [class.active-step]="step === 'routes'">
+        <button type="button" class="step-button" (click)="showStep('routes')" [disabled]="!document?.readyForNextStep || loading || saving || searching" [attr.aria-current]="step === 'routes' ? 'step' : null">
+          <span class="step-number">3</span>
+          <span class="step-copy"><strong>Routeplanning</strong><small>Leverlocaties</small></span>
+        </button>
       </li>
     </ol>
   </nav>
 
+  <section class="input-layout" *ngIf="step === 'input' && selectedVersion === 'new'" aria-labelledby="input-title">
+    <div class="input-heading">
+      <div><p class="eyebrow">Stap 1</p><h2 id="input-title">Leveringen invoeren</h2></div>
+      <span *ngIf="csvRows.length">{{ csvRows.length }} leveringen</span>
+    </div>
+    <div class="file-field">
+      <label for="csv-file">CSV-bestand</label>
+      <input id="csv-file" type="file" accept=".csv,text/csv" (change)="selectCsv($event)" [disabled]="uploading || versionsLoading">
+      <p>UTF-8, met een kopregel. Het oorspronkelijke bestand blijft in je browser.</p>
+    </div>
+    <div class="notice error-notice" *ngIf="inputError" role="alert">{{ inputError }}</div>
+    <div class="notice success-notice" *ngIf="inputMessage" role="status">{{ inputMessage }}</div>
+    <ng-container *ngIf="csvHeaders.length">
+      <div class="input-section-heading"><h3>Adreskolommen</h3><span>{{ csvName }}</span></div>
+      <div class="column-mapping">
+        <label *ngFor="let column of addressColumns">{{ column.label }}
+          <select [(ngModel)]="columns[column.key]" [disabled]="uploading">
+            <option value="">Kies een kolom</option>
+            <option *ngFor="let header of csvHeaders; let index = index" [value]="index">{{ header || 'Naamloze kolom' }} ({{ index + 1 }})</option>
+          </select>
+        </label>
+      </div>
+      <p class="mapping-note">Kies vier verschillende kolommen. Andere kolommen met een herkende naam blijven behouden; overige kolommen worden niet overgenomen.</p>
+      <div class="input-section-heading preview-heading"><h3>Voorbeeld</h3><span>Eerste {{ csvRows.length < 10 ? csvRows.length : 10 }} leveringen</span></div>
+      <div class="preview-scroll">
+        <table class="preview-table">
+          <thead><tr><th scope="col">#</th><th scope="col" *ngFor="let header of csvHeaders">{{ header || 'Naamloze kolom' }}</th></tr></thead>
+          <tbody><tr *ngFor="let row of csvRows.slice(0, 10); let index = index"><th scope="row">{{ index + 2 }}</th><td *ngFor="let value of row">{{ value }}</td></tr></tbody>
+        </table>
+      </div>
+      <div class="input-actions"><button class="accept-button" type="button" (click)="uploadCsv()" [disabled]="!mappingValid || uploading">{{ uploading ? 'Opslaan…' : 'Invoer opslaan' }}</button></div>
+    </ng-container>
+  </section>
+
+  <section class="input-layout" *ngIf="step === 'input' && selectedVersion !== 'new'" aria-labelledby="saved-input-title">
+    <div class="input-heading"><div><p class="eyebrow">Stap 1</p><h2 id="saved-input-title">Invoer opgeslagen</h2></div></div>
+    <p class="version-summary">{{ versionLabel(selectedVersion) }}</p>
+    <div class="notice success-notice" *ngIf="inputMessage" role="status">{{ inputMessage }}</div>
+    <button class="accept-button next-step-button" type="button" (click)="showStep('review')">Naar geocoding</button>
+  </section>
+
+  <ng-container *ngIf="step === 'review'">
   <section class="summary" *ngIf="document as review" aria-label="Samenvatting">
     <div class="summary-item"><span class="summary-value">{{ review.totalRecords }}</span><span class="summary-label">Adressen</span></div>
     <div class="summary-item"><span class="summary-value accepted-value">{{ review.acceptedCount }}</span><span class="summary-label">Geaccepteerd</span></div>
@@ -40,8 +98,20 @@
     </p>
   </section>
 
+  <div class="route-action" *ngIf="document?.readyForNextStep">
+    <button class="accept-button next-step-button" type="button" (click)="showStep('routes')" [disabled]="loading || saving || searching">Bekijk leverlocaties</button>
+  </div>
+
   <div class="notice error-notice" *ngIf="errorMessage" role="alert">{{ errorMessage }}</div>
+  <div class="notice error-notice" *ngIf="checkStatusError" role="alert">{{ checkStatusError }}</div>
   <div class="notice success-notice" *ngIf="savedMessage" role="status">{{ savedMessage }}</div>
+
+  <section class="check-state" *ngIf="checkRunning" role="status">Automatische adresmaching</section>
+  <section class="check-state" *ngIf="checkBusy" role="status">Er loopt een adrescontrole voor een andere versie.</section>
+  <section class="check-state" *ngIf="checkMissing && !checkRunning && !checkBusy">
+    <p>Er is nog geen adrescontrole voor deze versie uitgevoerd.</p>
+    <button class="accept-button next-step-button" type="button" (click)="startAddressCheck()" [disabled]="checkStarting || !checkAvailable">{{ checkStarting ? 'Starten…' : 'Voer nu uit...' }}</button>
+  </section>
 
   <section class="loading-state" *ngIf="loading" aria-live="polite">Reviewgegevens laden…</section>
 
@@ -169,4 +239,7 @@
       <p>Kies een record uit de lijst om de geocoding te beoordelen.</p>
     </section>
   </section>
+  </ng-container>
+
+  <app-route-map *ngIf="step === 'routes'" [version]="selectedVersion" [locations]="mapLocations" [missingCount]="missingMapLocations"></app-route-map>
 </main>

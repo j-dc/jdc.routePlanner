@@ -4,7 +4,10 @@ param(
     [string]$ComposeFile = 'compose.yaml',
 
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9_.-]*$')]
-    [string]$ServiceName = 'check-addresses'
+    [string]$ServiceName = 'check-addresses',
+
+    [ValidatePattern('^(legacy|[0-9]{8}T[0-9]{13}Z)$')]
+    [string]$Version = 'legacy'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -66,10 +69,17 @@ if ($PSCmdlet.ShouldProcess($ServiceName, "Start Docker Compose service using '$
             $photonStartedByLauncher = $true
         }
 
-        & docker @composeArguments run --rm --no-deps $ServiceName
+        & docker @composeArguments run --rm --no-deps --env "CHECK_ADDRESSES_VERSION=$Version" $ServiceName
         $checkExitCode = $LASTEXITCODE
-        if ($checkExitCode -ne 0) {
+        if ($checkExitCode -notin @(0, 2)) {
             throw "Docker Compose service '$ServiceName' failed with exit code $checkExitCode."
+        }
+        & docker @composeArguments run --rm --no-deps --env "CHECK_ADDRESSES_VERSION=$Version" extract-osm-geometry
+        if ($LASTEXITCODE -ne 0) {
+            throw 'The local OSM geometry extraction failed.'
+        }
+        if ($checkExitCode -eq 2) {
+            throw "Docker Compose service '$ServiceName' reported addresses requiring review (exit code 2)."
         }
     }
     finally {

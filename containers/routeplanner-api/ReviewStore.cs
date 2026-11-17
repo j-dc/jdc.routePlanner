@@ -228,6 +228,12 @@ public sealed class ReviewStore
 
         var report = JsonSerializer.Deserialize<AddressCheckReport>(reportBytes, JsonOptions)
             ?? throw new InvalidDataException("The geocoding report is empty or invalid.");
+        if (report.InputSha256 is not null
+            ? !string.Equals(report.InputSha256, Convert.ToHexString(SHA256.HashData(inputBytes)), StringComparison.OrdinalIgnoreCase)
+            : File.GetLastWriteTimeUtc(_inputCsvPath) > File.GetLastWriteTimeUtc(_reportPath))
+        {
+            throw new InvalidDataException("The input CSV changed. Run the address checker again before reviewing addresses.");
+        }
         var csvAddresses = ReadCsvAddresses(_inputCsvPath);
         ValidateReport(report, csvAddresses);
 
@@ -250,7 +256,7 @@ public sealed class ReviewStore
             }
 
             Directory.CreateDirectory(_archiveDirectory);
-            var archiveName = $"address-review-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}.json";
+            var archiveName = $"{Path.GetFileNameWithoutExtension(_reviewPath)}-{DateTimeOffset.UtcNow:yyyyMMddTHHmmssfffZ}-{Guid.NewGuid():N}.json";
             File.Move(_reviewPath, Path.Combine(_archiveDirectory, archiveName));
         }
 

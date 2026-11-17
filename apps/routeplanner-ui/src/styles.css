@@ -1,3 +1,5 @@
+@import 'ol/ol.css';
+
 :root {
   color-scheme: light;
   font-family: "Aptos", "Segoe UI Variable", "Segoe UI", sans-serif;
@@ -20,7 +22,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 360px; min-height: 100vh; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 3px solid #eaa35e; outline-offset: 2px; }

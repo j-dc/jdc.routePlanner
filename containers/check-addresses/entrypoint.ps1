@@ -6,6 +6,7 @@ $ErrorActionPreference = 'Stop'
 $inputPath = $env:CHECK_ADDRESSES_INPUT
 $reportPath = $env:CHECK_ADDRESSES_REPORT
 $geocoderBaseUrl = $env:GEOCODER_BASE_URL
+$version = $env:CHECK_ADDRESSES_VERSION
 $geocodingModulePath = Join-Path -Path $PSScriptRoot -ChildPath 'Geocoding.psm1'
 $expectedHeaders = [string[]]@(
     'rit', 'naam', 'straat', 'nr.', 'postcode', 'gemeente',
@@ -16,6 +17,21 @@ $parser = $null
 try {
     if ([string]::IsNullOrWhiteSpace($inputPath) -or [string]::IsNullOrWhiteSpace($reportPath)) {
         throw 'Input and report paths must be configured.'
+    }
+    if ([string]::IsNullOrEmpty($version) -and -not [string]::IsNullOrWhiteSpace($env:CHECK_ADDRESSES_VERSION_FILE)) {
+        $version = [System.IO.File]::ReadAllText($env:CHECK_ADDRESSES_VERSION_FILE).Trim()
+        if ([string]::IsNullOrWhiteSpace($version)) {
+            throw 'The address-check version file is empty.'
+        }
+    }
+    if (-not [string]::IsNullOrEmpty($version) -and $version -ne 'legacy') {
+        $parsedVersion = [datetimeoffset]::MinValue
+        if ($version -cnotmatch '^[0-9]{8}T[0-9]{13}Z$' -or
+            -not [datetimeoffset]::TryParseExact($version, "yyyyMMdd'T'HHmmssfffffff'Z'", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsedVersion)) {
+            throw 'The input version must be a valid UTC timestamp.'
+        }
+        $inputPath = Join-Path ([System.IO.Path]::GetDirectoryName($inputPath)) "ritten-$version.csv"
+        $reportPath = Join-Path ([System.IO.Path]::GetDirectoryName($reportPath)) "address-check-$version.json"
     }
     if ([string]::IsNullOrWhiteSpace($geocoderBaseUrl)) {
         throw 'GEOCODER_BASE_URL must point to an approved internal Photon-compatible endpoint.'
@@ -32,6 +48,7 @@ try {
     Import-Module -Name $geocodingModulePath -Force -ErrorAction Stop
 
     Add-Type -AssemblyName Microsoft.VisualBasic
+    $inputSha256 = (Get-FileHash -LiteralPath $inputPath -Algorithm SHA256).Hash
     $parser = [Microsoft.VisualBasic.FileIO.TextFieldParser]::new($inputPath)
     $parser.TextFieldType = [Microsoft.VisualBasic.FileIO.FieldType]::Delimited
     $parser.SetDelimiters(';')
@@ -147,6 +164,7 @@ try {
     }
     $report = [ordered]@{
         CreatedAtUtc = [DateTime]::UtcNow.ToString('o')
+        InputSha256 = $inputSha256
         TotalRecords = $results.Count
         Valid = $validCount
         Problems = $problemCount

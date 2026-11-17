@@ -77,7 +77,7 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Could not build the shared PowerShell base image.'
 }
 
-& docker @composeArguments build photon check-addresses routeplanner-ui routeplanner-api
+& docker @composeArguments build photon check-addresses extract-osm-geometry routeplanner-ui routeplanner-api
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not build the runtime application images.'
 }
