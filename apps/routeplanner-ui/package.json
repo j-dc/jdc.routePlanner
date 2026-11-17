@@ -7,9 +7,9 @@
     "build": "ng build"
   },
   "dependencies": {
-    "@angular/common": "21.0.0",
-    "@angular/compiler": "21.0.0",
-    "@angular/core": "21.0.0",
+    "@angular/common": "21.2.20",
+    "@angular/compiler": "21.2.20",
+    "@angular/core": "21.2.20",
     "@angular/forms": "21.0.0",
     "@angular/platform-browser": "21.0.0",
     "@types/papaparse": "^5.3.16",
@@ -20,9 +20,9 @@
     "zone.js": "0.15.1"
   },
   "devDependencies": {
-    "@angular/build": "21.0.0",
-    "@angular/cli": "21.0.0",
-    "@angular/compiler-cli": "21.0.0",
+    "@angular/build": "21.2.30",
+    "@angular/cli": "21.2.30",
+    "@angular/compiler-cli": "21.2.26",
     "typescript": "5.9.3"
   }
 }
