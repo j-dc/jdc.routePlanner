@@ -213,7 +213,6 @@ services:
       - type: bind
         source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
         target: /source
-        read_only: true
       - type: bind
         source: ${INPUT_DATA_DIR:-../jdc.routePlanner-private-data/input}
         target: /input

@@ -57,7 +57,64 @@ ReviewStore? GetReviewStore(string version)
         photonApiBaseUrl));
 }
 
+var settingsStores = new ConcurrentDictionary<string, SettingsStore>(StringComparer.Ordinal);
+SettingsStore? GetSettingsStore(string version)
+{
+    if (!InputCsvStore.IsVersion(version) || !File.Exists(InputCsvStore.InputPath(inputCsvPath, version))) return null;
+    return settingsStores.GetOrAdd(version, key => new SettingsStore(Path.Combine(
+        Path.GetDirectoryName(Path.GetFullPath(reportPath))!,
+        key == "legacy" ? "settings.json" : $"settings-{key}.json")));
+}
+
+IResult SettingsFailure(Exception exception) => exception switch
+{
+    ArgumentException => Results.Problem(exception.Message, statusCode: StatusCodes.Status400BadRequest),
+    JsonException => Results.Problem("Het instellingenbestand bevat ongeldige JSON.", statusCode: StatusCodes.Status409Conflict),
+    _ => Results.Problem("Het instellingenbestand kon niet worden gelezen of opgeslagen.", statusCode: StatusCodes.Status500InternalServerError)
+};
+
 app.MapGet("/api/health", () => Results.Ok(new { status = "ok" }));
+
+app.MapGet("/api/versions/{version}/settings", async (string version, CancellationToken cancellationToken) =>
+{
+    var store = GetSettingsStore(version);
+    if (store is null) return Results.NotFound();
+    try { return Results.Ok(await store.GetAllAsync(cancellationToken)); }
+    catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
+});
+
+app.MapGet("/api/versions/{version}/settings/{key}", async (string version, string key, CancellationToken cancellationToken) =>
+{
+    var store = GetSettingsStore(version);
+    if (store is null || !SettingsStore.IsKey(key)) return Results.NotFound();
+    try
+    {
+        var value = await store.GetAsync(key, cancellationToken);
+        return value is null ? Results.NotFound() : Results.Ok(new { key, value });
+    }
+    catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
+});
+
+app.MapPut("/api/versions/{version}/settings/{key}", async (string version, string key, SettingValueRequest request, CancellationToken cancellationToken) =>
+{
+    var store = GetSettingsStore(version);
+    if (store is null) return Results.NotFound();
+    if (request.Value is null) return Results.Problem("De waarde ontbreekt.", statusCode: StatusCodes.Status400BadRequest);
+    try
+    {
+        await store.SetAsync(key, request.Value, cancellationToken);
+        return Results.Ok(new { key, value = request.Value });
+    }
+    catch (Exception exception) when (exception is ArgumentException or JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
+});
+
+app.MapDelete("/api/versions/{version}/settings/{key}", async (string version, string key, CancellationToken cancellationToken) =>
+{
+    var store = GetSettingsStore(version);
+    if (store is null || !SettingsStore.IsKey(key)) return Results.NotFound();
+    try { return await store.RemoveAsync(key, cancellationToken) ? Results.NoContent() : Results.NotFound(); }
+    catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
+});
 
 app.MapGet("/api/versions", () => Results.Ok(InputCsvStore.ListVersions(inputCsvPath)));
 app.MapGet("/api/versions/{version}", (string version) =>
