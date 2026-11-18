@@ -35,12 +35,12 @@ export interface MapLocation {
         <span class="location-count">{{ locations.length }} op kaart</span>
       </header>
       <p class="map-warning" *ngIf="missingCount" role="alert">{{ missingCount }} leveringen hebben geen bruikbare bevestigde coördinaten.</p>
-      <div class="geometry-notice" *ngIf="geometryError || missingContours || geometryRunning || geometryBusy" role="status">
+      <div class="geometry-notice" [class.missing-contours]="!geometryRunning && !geometryBusy && !geometryError && missingContours" *ngIf="geometryError || missingContours || geometryRunning || geometryBusy" role="status">
         <span *ngIf="geometryRunning">Lokale geometrie wordt geladen...</span>
         <span *ngIf="!geometryRunning && geometryBusy">Er loopt al een andere verwerking.</span>
         <span *ngIf="!geometryRunning && !geometryBusy && geometryError">{{ geometryError }}</span>
         <span *ngIf="!geometryRunning && !geometryBusy && !geometryError && missingContours">Voor {{ missingContours }} leveringen is geen lokale contour beschikbaar.</span>
-        <button *ngIf="!geometryRunning && !geometryBusy" type="button" (click)="refreshGeometry()" [disabled]="geometryStarting">{{ geometryStarting ? 'Starten...' : 'Laad de lokale geometrie' }}</button>
+        <button *ngIf="!geometryRunning && !geometryBusy" type="button" (click)="refreshGeometry()" [disabled]="geometryStarting">{{ geometryStarting ? 'Starten...' : 'Herbereken en laad de lokale geometrie' }}</button>
       </div>
       <div class="map-body">
         <div #mapTarget class="map" tabindex="0" aria-label="Kaart met bevestigde leverlocaties"></div>
@@ -70,6 +70,7 @@ export interface MapLocation {
     .selection-panel li strong { color: var(--muted); font-size: 11px; }
     .map-warning { padding: 10px 12px; color: var(--red); background: var(--red-pale); font-size: 13px; }
     .geometry-notice { display: flex; align-items: center; flex-wrap: wrap; gap: 12px; margin: 0 0 14px; padding: 10px 12px; color: var(--red); background: var(--red-pale); font-size: 13px; }
+    .geometry-notice.missing-contours { color: #173f55; background: #e3f2f8; }
     .geometry-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--forest); border-radius: 5px; background: var(--forest); color: white; font-weight: 700; }
     .geometry-notice button:disabled { cursor: not-allowed; opacity: 0.55; }
     .map-empty { color: var(--muted); font-size: 13px; }
@@ -107,14 +108,16 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     const markers = new VectorLayer({
       source: clusters,
       style: feature => {
-        const count = (feature.get('features') as Feature<Point>[]).length;
+        const locations = feature.get('features') as Feature<Point>[];
+        const count = locations.length;
+        const hasMissingContour = locations.some(location => location.get('missingContour') === true);
         return new Style({
           image: new CircleStyle({
             radius: count > 1 ? 14 : 7,
-            fill: new Fill({ color: '#1b5945' }),
+            fill: new Fill({ color: hasMissingContour ? '#82b4cd' : '#1b5945' }),
             stroke: new Stroke({ color: '#ffffff', width: 2 }),
           }),
-          text: count > 1 ? new Text({ text: String(count), fill: new Fill({ color: '#ffffff' }), font: '700 12px sans-serif' }) : undefined,
+          text: count > 1 ? new Text({ text: String(count), fill: new Fill({ color: hasMissingContour ? '#173f55' : '#ffffff' }), font: '700 12px sans-serif' }) : undefined,
         });
       },
     });
@@ -249,6 +252,10 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     const features = new GeoJSON().readFeatures(this.geometryData, { featureProjection: 'EPSG:3857' })
       .filter(feature => selectedIds.has(String(feature.getId())) && feature.getGeometry()?.getType() !== 'Point');
     const foundIds = new Set(features.map(feature => String(feature.getId())));
+    this.source.getFeatures().forEach(feature => {
+      const location = feature.get('location') as MapLocation;
+      feature.set('missingContour', !location.candidateId || !foundIds.has(location.candidateId));
+    });
     this.missingContours = this.locations.filter(location => !location.candidateId || !foundIds.has(location.candidateId)).length;
     this.geometrySource.addFeatures(features);
   }
