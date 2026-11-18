@@ -79,7 +79,50 @@ app.MapGet("/api/versions/{version}/settings", async (string version, Cancellati
 {
     var store = GetSettingsStore(version);
     if (store is null) return Results.NotFound();
-    try { return Results.Ok(await store.GetAllAsync(cancellationToken)); }
+    try { return Results.Ok(await store.GetAsync(cancellationToken)); }
+    catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
+});
+
+app.MapPost("/api/versions/{version}/start-location/search", async (string version, PhotonSearchRequest request, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetSettingsStore(version) is null) return Results.NotFound();
+    try { return Results.Ok(await SettingsStore.SearchAsync(client, new Uri(photonApiBaseUrl, UriKind.Absolute), request.Query, cancellationToken)); }
+    catch (ArgumentException exception) { return Results.Problem(exception.Message, statusCode: StatusCodes.Status400BadRequest); }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException)
+    {
+        return Results.Problem("De lokale Photon-geocoder is niet beschikbaar.", statusCode: StatusCodes.Status502BadGateway);
+    }
+});
+
+app.MapGet("/api/versions/{version}/start-location", async (string version, CancellationToken cancellationToken) =>
+{
+    var store = GetSettingsStore(version);
+    if (store is null) return Results.NotFound();
+    try
+    {
+        var location = (await store.GetAsync(cancellationToken)).StartLocation;
+        return location is null ? Results.NotFound() : Results.Ok(location);
+    }
+    catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
+});
+
+app.MapPut("/api/versions/{version}/start-location", async (string version, StartLocation location, CancellationToken cancellationToken) =>
+{
+    var store = GetSettingsStore(version);
+    if (store is null) return Results.NotFound();
+    try
+    {
+        await store.SetStartLocationAsync(location, cancellationToken);
+        return Results.Ok(location);
+    }
+    catch (Exception exception) when (exception is ArgumentException or JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
+});
+
+app.MapDelete("/api/versions/{version}/start-location", async (string version, CancellationToken cancellationToken) =>
+{
+    var store = GetSettingsStore(version);
+    if (store is null) return Results.NotFound();
+    try { return await store.RemoveStartLocationAsync(cancellationToken) ? Results.NoContent() : Results.NotFound(); }
     catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
 });
 
@@ -89,8 +132,8 @@ app.MapGet("/api/versions/{version}/settings/{key}", async (string version, stri
     if (store is null || !SettingsStore.IsKey(key)) return Results.NotFound();
     try
     {
-        var value = await store.GetAsync(key, cancellationToken);
-        return value is null ? Results.NotFound() : Results.Ok(new { key, value });
+        var settings = (await store.GetAsync(cancellationToken)).Settings;
+        return settings.TryGetValue(key, out var value) ? Results.Ok(new { key, value }) : Results.NotFound();
     }
     catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException) { return SettingsFailure(exception); }
 });

@@ -242,4 +242,5 @@
   </ng-container>
 
   <app-route-map *ngIf="step === 'routes'" [version]="selectedVersion" [locations]="mapLocations" [missingCount]="missingMapLocations"></app-route-map>
+  <app-version-settings *ngIf="step === 'routes'" [version]="selectedVersion"></app-version-settings>
 </main>

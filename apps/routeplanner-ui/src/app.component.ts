@@ -5,6 +5,7 @@ import { FormsModule } from '@angular/forms';
 import Papa from 'papaparse';
 import { environment } from './environment';
 import { MapLocation, RouteMapComponent } from './route-map.component';
+import { VersionSettingsComponent } from './version-settings.component';
 
 interface ReviewAddress {
   street: string;
@@ -67,7 +68,7 @@ type AddressColumn = 'straat' | 'nr.' | 'postcode' | 'gemeente';
 @Component({
   selector: 'app-root',
   standalone: true,
-  imports: [CommonModule, FormsModule, RouteMapComponent],
+  imports: [CommonModule, FormsModule, RouteMapComponent, VersionSettingsComponent],
   templateUrl: './app.component.html',
   styleUrl: './app.component.css',
 })
