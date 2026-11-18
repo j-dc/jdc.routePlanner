@@ -82,6 +82,7 @@ services:
       GEOMETRY_OUTPUT_DIR: /output
       GEOMETRY_INPUT_DIR: /input
       GEOMETRY_REVIEW_DIR: /review
+      GEOMETRY_SETTINGS_DIR: /settings
       OSM_PBF_PATH: /osm/belgium-latest.osm.pbf
     volumes:
       - type: bind
@@ -102,6 +103,10 @@ services:
       - type: volume
         source: review-data
         target: /review
+        read_only: true
+      - type: volume
+        source: review-data
+        target: /settings
         read_only: true
       - type: volume
         source: address-check-jobs

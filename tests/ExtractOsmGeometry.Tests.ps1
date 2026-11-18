@@ -107,20 +107,67 @@ Describe 'extract-osm-geometry entrypoint' {
         finally { Remove-Item -LiteralPath $directory -Recurse -Force }
     }
 
-    It 'does not replace the output when the PBF is invalid' {
+    It 'includes the start location in the geojson when settings are present' {
         $directory = New-TestDirectory
         try {
-            $report = @{ Results = @(@{ CsvRecordNumber = 2; Status = 'valid'; Longitude = 3.01; Latitude = 50.0
-                        Candidates = @(@{ CandidateId = 'W/10'; GeometryIsValid = $true; Longitude = 3.01; Latitude = 50.0 }) }) }
-            [System.IO.File]::WriteAllText("$directory/address-check-$script:Version.json", ($report | ConvertTo-Json -Depth 10))
-            Set-Content -LiteralPath "$directory/invalid.pbf" -Value 'invalid'
-            $output = "$directory/osm-geometry-$script:Version.geojson"
-            Set-Content -LiteralPath $output -Value 'existing'
-            $exitCode = Invoke-Extraction $directory @{ CHECK_ADDRESSES_VERSION = $script:Version; GEOMETRY_REPORT_DIR = $directory
-                GEOMETRY_OUTPUT_DIR = $directory; OSM_PBF_PATH = "$directory/invalid.pbf" }
-            $exitCode | Should -Not -Be 0
-            (Get-Content -LiteralPath $output -Raw).Trim() | Should -Be 'existing'
+            Set-Content -LiteralPath "$directory/synthetic.osm" -Value $script:OsmXml -Encoding utf8
+            & osmium cat "$directory/synthetic.osm" -o "$directory/synthetic.osm.pbf"
+            $report = @{ InputSha256 = 'INPUT'; Results = @(
+                    @{ CsvRecordNumber = 2; Status = 'valid'; Longitude = 3.01; Latitude = 50.0; Candidates = @(
+                            @{ CandidateId = 'W/10'; GeometryIsValid = $true; Longitude = 3.01; Latitude = 50.0 }) }) }
+            $reportPath = "$directory/address-check-$script:Version.json"
+            $inputPath = "$directory/ritten-$script:Version.csv"
+            [System.IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 10))
+            [System.IO.File]::WriteAllBytes($inputPath, [System.Text.Encoding]::UTF8.GetBytes('synthetic input'))
+            $settings = @{ StartLocation = @{
+                    Label = 'Test Location'
+                    Street = 'Test Street'
+                    HouseNumber = '123'
+                    Postcode = '1234'
+                    Municipality = 'Test City'
+                    Latitude = 50.5
+                    Longitude = 3.5
+                    OsmType = 'node'
+                    OsmId = 999 } }
+            $settingsPath = "$directory/settings-$script:Version.json"
+            [System.IO.File]::WriteAllText($settingsPath, ($settings | ConvertTo-Json -Depth 10))
+            $environment = @{ CHECK_ADDRESSES_VERSION = $script:Version; GEOMETRY_REPORT_DIR = $directory; GEOMETRY_OUTPUT_DIR = $directory
+                GEOMETRY_INPUT_DIR = $directory; GEOMETRY_REVIEW_DIR = $directory; GEOMETRY_SETTINGS_DIR = $directory; OSM_PBF_PATH = "$directory/synthetic.osm.pbf" }
+
+            Invoke-Extraction $directory $environment | Should -Be 0
+            $outputPath = "$directory/osm-geometry-$script:Version.geojson"
+            $data = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json
+            $data.features[0].id | Should -Be 'start-location'
+            $data.features[0].geometry.type | Should -Be 'Point'
+            $data.features[0].geometry.coordinates | Should -Be @(3.5, 50.5)
+            $data.features[0].properties.isStartLocation | Should -Be $true
+            $data.features[0].properties.label | Should -Be 'Test Location'
+            $data.metadata.hasStartLocation | Should -Be $true
         }
         finally { Remove-Item -LiteralPath $directory -Recurse -Force }
     }
-}
+
+    It 'does not include start location when settings file is missing' {
+        $directory = New-TestDirectory
+        try {
+            Set-Content -LiteralPath "$directory/synthetic.osm" -Value $script:OsmXml -Encoding utf8
+            & osmium cat "$directory/synthetic.osm" -o "$directory/synthetic.osm.pbf"
+            $report = @{ InputSha256 = 'INPUT'; Results = @(
+                    @{ CsvRecordNumber = 2; Status = 'valid'; Longitude = 3.01; Latitude = 50.0; Candidates = @(
+                            @{ CandidateId = 'W/10'; GeometryIsValid = $true; Longitude = 3.01; Latitude = 50.0 }) }) }
+            $reportPath = "$directory/address-check-$script:Version.json"
+            $inputPath = "$directory/ritten-$script:Version.csv"
+            [System.IO.File]::WriteAllText($reportPath, ($report | ConvertTo-Json -Depth 10))
+            [System.IO.File]::WriteAllBytes($inputPath, [System.Text.Encoding]::UTF8.GetBytes('synthetic input'))
+            $environment = @{ CHECK_ADDRESSES_VERSION = $script:Version; GEOMETRY_REPORT_DIR = $directory; GEOMETRY_OUTPUT_DIR = $directory
+                GEOMETRY_INPUT_DIR = $directory; GEOMETRY_REVIEW_DIR = $directory; GEOMETRY_SETTINGS_DIR = $directory; OSM_PBF_PATH = "$directory/synthetic.osm.pbf" }
+
+            Invoke-Extraction $directory $environment | Should -Be 0
+            $outputPath = "$directory/osm-geometry-$script:Version.geojson"
+            $data = Get-Content -LiteralPath $outputPath -Raw | ConvertFrom-Json
+            $data.features[0].id | Should -Not -Be 'start-location'
+            $data.metadata.hasStartLocation | Should -Be $false
+        }
+        finally { Remove-Item -LiteralPath $directory -Recurse -Force }
+    }
+

@@ -58,11 +58,20 @@ function Invoke-GeometryExtraction {
     $reportPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_REPORT_DIR' '/source') "address-check$suffix.json"
     $outputPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_OUTPUT_DIR' '/output') "osm-geometry$suffix.geojson"
     $osmPath = Get-EnvironmentValue 'OSM_PBF_PATH' '/osm/belgium-latest.osm.pbf'
+    $settingsPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_SETTINGS_DIR' '/settings') (if ($version -eq 'legacy') { 'settings.json' } else { "settings-$version.json" })
 
     $reportBytes = [System.IO.File]::ReadAllBytes($reportPath)
     $report = [System.Text.Encoding]::UTF8.GetString($reportBytes) | ConvertFrom-Json -Depth 100
     if (-not (Test-Path -LiteralPath $osmPath -PathType Leaf)) {
         throw [System.IO.FileNotFoundException]::new('The local OSM extract is unavailable.')
+    }
+
+    $startLocation = $null
+    if (Test-Path -LiteralPath $settingsPath -PathType Leaf) {
+        $settings = [System.Text.Encoding]::UTF8.GetString([System.IO.File]::ReadAllBytes($settingsPath)) | ConvertFrom-Json -Depth 100
+        if (Test-HasValue $settings 'StartLocation') {
+            $startLocation = $settings.StartLocation
+        }
     }
 
     $requested = [ordered]@{}
@@ -178,14 +187,39 @@ function Invoke-GeometryExtraction {
         [ordered]@{ candidateId = $objectId; recordNumbers = @($requested[$objectId] | Sort-Object) }
     }
 
+    $features = @($featuresById.Values)
+    if ($null -ne $startLocation -and $null -ne $startLocation.Latitude -and $null -ne $startLocation.Longitude) {
+        $startLocationFeature = [ordered]@{
+            type       = 'Feature'
+            id         = 'start-location'
+            geometry   = [ordered]@{
+                type        = 'Point'
+                coordinates = @([double]$startLocation.Longitude, [double]$startLocation.Latitude)
+            }
+            properties = [ordered]@{
+                candidateId = 'start-location'
+                label       = $startLocation.Label
+                street      = $startLocation.Street
+                houseNumber = $startLocation.HouseNumber
+                postcode    = $startLocation.Postcode
+                municipality = $startLocation.Municipality
+                osmType     = $startLocation.OsmType
+                osmId       = $startLocation.OsmId
+                isStartLocation = $true
+            }
+        }
+        $features = @($startLocationFeature) + $features
+    }
+
     $result = [ordered]@{
         type     = 'FeatureCollection'
-        features = @($featuresById.Values)
+        features = $features
         metadata = [ordered]@{
             version                  = $version
             sourceReportSha256       = Get-Sha256Hex $reportBytes
             inputSha256              = if (Test-HasValue $report 'InputSha256') { $report.InputSha256 } else { $null }
             createdAtUtc             = [datetime]::UtcNow.ToString('o')
+            hasStartLocation         = $null -ne $startLocation -and $null -ne $startLocation.Latitude -and $null -ne $startLocation.Longitude
             missingObjects           = @($missingObjects)
             unidentifiableCandidates = @($unidentifiable)
         }
