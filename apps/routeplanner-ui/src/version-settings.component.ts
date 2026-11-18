@@ -34,8 +34,16 @@ interface SettingRow { key: string; value: string; saved: string; busy: boolean;
           </li>
         </ul>
       </div>
-      <h3>Overige instellingen</h3>
       <p class="settings-error" *ngIf="error" role="alert">{{ error }}</p>
+      <ul class="settings-list">
+        <li>
+          <label for="setting-nmbDrivers">Aantal Chauffeurs</label>
+          <input id="setting-nmbDrivers" type="text" inputmode="numeric" maxlength="1000" [(ngModel)]="drivers.value" [disabled]="loading || !settingsLoaded || drivers.busy">
+          <button type="button" (click)="save(drivers)" [disabled]="loading || !settingsLoaded || drivers.busy || drivers.value === drivers.saved || !validDriverCount">Opslaan</button>
+        </li>
+      </ul>
+      <p class="settings-error" *ngIf="drivers.value && !validDriverCount">Vul een positief geheel aantal chauffeurs in.</p>
+      <h3>Overige instellingen</h3>
       <p class="settings-empty" *ngIf="!loading && !rows.length">Nog geen instellingen voor deze versie.</p>
       <ul class="settings-list">
         <li *ngFor="let row of rows">
@@ -79,6 +87,8 @@ interface SettingRow { key: string; value: string; saved: string; busy: boolean;
 export class VersionSettingsComponent implements OnChanges {
   @Input({ required: true }) version = '';
   rows: SettingRow[] = [];
+  drivers: SettingRow = { key: 'nmbDrivers', value: '', saved: '', busy: false };
+  settingsLoaded = false;
   startLocation: StartLocation | null = null;
   startQuery = '';
   startResults: StartLocation[] = [];
@@ -93,9 +103,13 @@ export class VersionSettingsComponent implements OnChanges {
   routeMessage = '';
   private readonly http = inject(HttpClient);
   private get url(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/settings`; }
+  get validDriverCount(): boolean { return /^0*[1-9][0-9]*$/.test(this.drivers.value); }
 
   ngOnChanges(): void {
     this.rows = [];
+    this.drivers = { key: 'nmbDrivers', value: '', saved: '', busy: false };
+    this.settingsLoaded = false;
+    this.loading = false;
     this.startLocation = null;
     this.startResults = [];
     this.startSearched = false;
@@ -110,7 +124,12 @@ export class VersionSettingsComponent implements OnChanges {
       next: document => {
         if (version !== this.version) return;
         this.startLocation = document.startLocation;
-        this.rows = Object.entries(document.settings).map(([key, value]) => ({ key, value, saved: value, busy: false }));
+        const driverCount = document.settings[this.drivers.key] ?? '';
+        this.drivers.value = this.drivers.saved = driverCount;
+        this.rows = Object.entries(document.settings)
+          .filter(([key]) => key !== this.drivers.key)
+          .map(([key, value]) => ({ key, value, saved: value, busy: false }));
+        this.settingsLoaded = true;
         this.loading = false;
       },
       error: () => { if (version === this.version) { this.error = 'De instellingen konden niet worden geladen.'; this.loading = false; } }
@@ -164,6 +183,10 @@ export class VersionSettingsComponent implements OnChanges {
   add(): void {
     const key = this.newKey.trim();
     if (!key) return;
+    if (key === this.drivers.key) {
+      this.error = 'Gebruik het vaste veld Aantal Chauffeurs voor deze instelling.';
+      return;
+    }
     this.adding = true;
     this.error = '';
     this.http.put<{ key: string; value: string }>(`${this.url}/${encodeURIComponent(key)}`, { value: this.newValue }).subscribe({
