@@ -2,7 +2,7 @@
 
 Dit project helpt een pakketbezorger om afleverroutes te plannen. Je geeft een lijst met adressen op en kiest hoeveel ritten er nodig zijn of hoeveel chauffeurs beschikbaar zijn. Het programma controleert de adressen, verdeelt de leveringen over de chauffeurs en probeert het totale aantal gereden kilometers zo klein mogelijk te maken. Het resultaat bestaat uit kaarten en adressenlijsten in de juiste volgorde. Ook vergelijkt het programma de nieuwe routes met de bestaande routes, zodat je kunt zien of er kilometers worden bespaard.
 
-Alle effectieve workflowstappen draaien in containers, inclusief de PowerShell-entrypoints. Scripts in `./scripts/` zijn dunne hostlaunchers: `setup.ps1` bouwt centraal alle benodigde containerimages en kan databereiding uitvoeren; `start.ps1` start de langlopende services zonder build of health-wait; `stop.ps1` stopt de containers uit beide Compose-stacks zonder volumes of data te verwijderen; de overige scripts voeren hun eenmalige workflowcontainer uit met vooraf gebouwde images. De host voert zelf geen workflow- of dataverwerkingslogica uit. De workflow plant pakketbezorging voor ongeveer 400 adressen en een lijst van ongeveer 10 chauffeurs. Per planning wordt óf het gewenste aantal ritten óf het aantal in te zetten chauffeurs opgegeven. Iedere geselecteerde chauffeur krijgt minstens één levering; het doel is de totale afstand over alle ritten te minimaliseren. Iedere chauffeur ontvangt een kaart van de toegewezen route op een OSM-achtergrondkaart en een adressenlijst in de juiste stopvolgorde. OSM-data en Valhalla-tegels worden in containers voorbereid of bijgewerkt buiten een normale planningsrun. Adresgeocodering is een aparte stap: OSM-routeringsdata zet adressen niet vanzelf om naar coördinaten.
+Alle effectieve workflowstappen draaien in containers, inclusief de PowerShell-entrypoints. Scripts in `./scripts/` zijn dunne hostlaunchers: `setup.ps1` bouwt centraal alle benodigde containerimages en kan databereiding uitvoeren; `start.ps1` start de langlopende services zonder build of health-wait; `stop.ps1` stopt de containers uit beide Compose-stacks; `cleanup.ps1` verwijdert de containers en stacknetwerken zonder volumes of data te wissen; de overige scripts voeren hun eenmalige workflowcontainer uit met vooraf gebouwde images. De host voert zelf geen workflow- of dataverwerkingslogica uit. De workflow plant pakketbezorging voor ongeveer 400 adressen en een lijst van ongeveer 10 chauffeurs. Per planning wordt óf het gewenste aantal ritten óf het aantal in te zetten chauffeurs opgegeven. Iedere geselecteerde chauffeur krijgt minstens één levering; het doel is de totale afstand over alle ritten te minimaliseren. Iedere chauffeur ontvangt een kaart van de toegewezen route op een OSM-achtergrondkaart en een adressenlijst in de juiste stopvolgorde. OSM-data en Valhalla-tegels worden in containers voorbereid of bijgewerkt buiten een normale planningsrun. Adresgeocodering is een aparte stap: OSM-routeringsdata zet adressen niet vanzelf om naar coördinaten.
 
 ## Invoerbestand
 
@@ -56,13 +56,15 @@ De namen hieronder zijn de container-entrypoints. `CheckAddresses`, `UpdateGeoco
 
 `./scripts/stop.ps1` stopt alle containers uit `compose.yaml` en `compose.setup.yaml`, inclusief het maintenance-profiel. Het script valideert beide Compose-configuraties en controleert de Docker-daemon. Het gebruikt `docker compose stop`, niet `down`: containers blijven behouden en volumes, invoerbestanden, rapporten, OSM-data en Photon-data worden niet verwijderd. Gebruik `./scripts/stop.ps1 -WhatIf` om de actie eerst te simuleren; `-Confirm` vraagt bevestiging.
 
+`./scripts/cleanup.ps1` verwijdert de containers en netwerken uit beide Compose-stacks, inclusief het maintenance-profiel en eventuele verweesde projectcontainers. Het gebruikt `docker compose down --remove-orphans`, zonder `--volumes`: Compose-volumes en bind-mounted invoer, uitvoer, OSM- en Photon-data blijven bestaan. Omdat containers hiermee worden verwijderd, vraagt het script standaard om bevestiging. Gebruik `./scripts/cleanup.ps1 -WhatIf` om de actie eerst te simuleren.
+
 | EntryPoint | Moment | Verantwoordelijkheid in de container |
 | --- | --- | --- |
 | `FetchOsm` | Eenmalig of bij handmatig verversen | Downloadt het Geofabrik België-extract dat West-Vlaanderen omvat, controleert de MD5 en bewaart de brondata in beheerde opslag. |
 | `BuildValhallaTiles` | Eenmalig of na wijzigingen aan data/configuratie | Bouwt of ververst Valhalla-tegels uit het OSM-extract. |
 | `UpdateGeocodeDatabase` | Eenmalig en bij een databaseresfresh | Downloadt de officiële Photon Europa-dump, controleert de checksum en importeert alleen landcode `BE` naar een nieuwe lokale database. |
 | `CheckAddresses` | Voor iedere planning | Wordt handmatig of via API en interne broker per versie gestart. Valideert de exacte CSV-header en rijen en geocodeert via Photon op het interne Compose-netwerk; dedupliceert identieke aanvragen, herhaalt tijdelijke fouten begrensd en accepteert alleen unieke exacte adresmatches. Overige kandidaten en foutredenen komen in het rapport voor handmatige controle. |
-| `extract-osm-geometry` | Na iedere adrescontrole | De Python-entrypoint haalt kandidaatobjecten en hun referenties uit de lokale PBF met Osmium en bewaart geometrieën en ontbrekende objecten als versiegebonden GeoJSON. De container heeft geen netwerktoegang. |
+| `extract-osm-geometry` | Na iedere adrescontrole | De PowerShell-entrypoint haalt kandidaatobjecten en hun referenties uit de lokale PBF met Osmium en bewaart geometrieën en ontbrekende objecten als versiegebonden GeoJSON. De container heeft geen netwerktoegang. |
 | `ReviewAddresses` | Na iedere geocodingrun | Toont het bronadres en Photon-kandidaten in een lokale Angular-website. De .NET API bewaart bevestigde kandidaatkeuzes en coördinaten, of een onopgeloste beslissing met notitie. |
 | `CreateRoutes` | Voor iedere planning | Valideert de gekozen ritten- of chauffeursaantallen, gebruikt Valhalla-kosten om leveringen toe te wijzen en te ordenen, en maakt de definitieve routegegevens. Iedere geselecteerde chauffeur krijgt werk; de totale afstand wordt geminimaliseerd. |
 | `CreateDriverOutputs` | Na het maken van de routes | Maakt per chauffeur een OSM-kaart van de route en een adressenlijst in de exacte stopvolgorde. |
@@ -82,7 +84,7 @@ Voer na `./scripts/checkAddresses.ps1` `./scripts/reviewAddresses.ps1` uit. De w
 
 Na een volledig afgeronde review toont **Routeplanning** met OpenLayers alle bevestigde leverlocaties en beschikbare lokale objectcontouren op een OpenStreetMap-kaart. Samenvallende locaties worden gegroepeerd en zijn aanklikbaar; ontbrekende coördinaten en contouren worden gemeld. Dit is een locatieoverzicht, nog geen routeberekening. De achtergrondtegels komen momenteel rechtstreeks van de publieke OpenStreetMap-tegelserver, niet uit de lokale PBF; de browser deelt daarbij zijn IP-adres en het bekeken kaartgebied met die server. De adressen en coördinaten zelf worden niet als adreszoekopdracht verzonden. Voor volledig lokale kaartweergave is een eigen tegelservice nodig.
 
-De geometriecontainer gebruikt Ubuntu 24.04 met `python3` en `osmium-tool`, omdat de gewenste Osmium-binary niet als `osmium-tool`-pakket in de bestaande Alpine 3.24-pakketindex beschikbaar is. De aparte Python-entrypoint verwerkt alleen de geselecteerde kandidaatobjecten; de PBF wordt hierbij gelezen maar niet aangepast. De Osmium-extractie kan bij veel of complexe relaties tijdelijk ruimte in `/tmp` nodig hebben. De synthetische test `tests/ExtractOsmGeometry.Tests.py` gebruikt een zelfgemaakte PBF en vereist geen netwerk of privégegevens.
+De geometriecontainer gebruikt Ubuntu 24.04 met PowerShell 7.6.6 (glibc-build, checksum-gecontroleerd) en `osmium-tool`, omdat de gewenste Osmium-binary niet als `osmium-tool`-pakket in de bestaande Alpine 3.24-pakketindex beschikbaar is. De aparte PowerShell-entrypoint (`containers/extract-osm-geometry/entrypoint.ps1`) verwerkt alleen de geselecteerde kandidaatobjecten; elke Osmium-aanroep met argumenten, uitvoer en exitcode wordt naar het containerlog geschreven. De PBF wordt gelezen maar niet aangepast. De Osmium-extractie kan bij veel of complexe relaties tijdelijk ruimte in `/tmp` nodig hebben. De synthetische Pester-test `tests/ExtractOsmGeometry.Tests.ps1` gebruikt een zelfgemaakte PBF en vereist geen privégegevens; voer hem uit in de geometrie-image met Pester 5 (`docker run --rm --entrypoint pwsh -v <tests>:/tests:ro -v <Pester-map>:/modules/Pester:ro <image> -Command "Import-Module /modules/Pester/Pester.psd1; Invoke-Pester /tests/ExtractOsmGeometry.Tests.ps1"`).
 
 De reviewwebsite gebruikt Angular 21 en Node.js 26.13.1. Open de repository in de `.devcontainer`; npm-installatie en Angular-ontwikkeling draaien daar, niet op de host. De API target .NET 11. De officiële .NET 11-images zijn voor deze runtime niet als Alpine-tags gepubliceerd; daarom gebruikt de API de gepinde `11.0.100-resolute-amd64` SDK- en `11.0.0-resolute-amd64` runtime-images.
 
@@ -114,8 +116,8 @@ flowchart TD
 		E2 --> S4["Host start ./scripts/start.ps1"]
 		E6 --> S4
 		S4 --> S5["Start Photon, web, API en Traefik zonder build of health-wait"]
-		S5 -. "na gebruik" .-> S6["Host start ./scripts/stop.ps1"]
-		S6 --> S7["Stop runtime- en setupcontainers; behoud volumes en data"]
+		S5 -. "na gebruik" .-> S6["Host start ./scripts/stop.ps1 of ./scripts/cleanup.ps1"]
+		S6 --> S7["Stop containers of verwijder containers/netwerken; behoud volumes en data"]
 	end
 
 	subgraph Planning["Per planningsrun"]
@@ -132,7 +134,7 @@ flowchart TD
 		D --> E{"Adressen al coördinaten?"}
 		E -- Nee --> F["Adrescontrolecontainer verwerkt gekozen versie via Photon"]
 		E -- Ja --> G["Locaties vaststellen"]
-		F --> GEO["Aparte Python-container haalt kandidaatobjecten uit lokale OSM-PBF"]
+		F --> GEO["Aparte PowerShell-container haalt kandidaatobjecten uit lokale OSM-PBF"]
 		GEO --> GEO2["Bewaar versiegebonden GeoJSON en ontbrekende objecten"]
 		GEO2 --> G
 		G --> R["API meldt taakstatus; gebruiker beoordeelt Photon-resultaten op routing.localtest.me"]
