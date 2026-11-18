@@ -101,6 +101,15 @@ test('reviews remain isolated and reject reports for different input', async () 
   assert.equal((await fetch(`${baseUrl}/api/versions/not-a-version/review`)).status, 404);
 });
 
+test('route calculation placeholder rejects unknown versions and reports it is not implemented', async () => {
+  const request = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
+  assert.equal((await fetch(`${baseUrl}/api/versions/invalid/route-calculation`, request)).status, 404);
+  assert.equal((await fetch(`${baseUrl}/api/versions/20000101T0000000000000Z/route-calculation`, request)).status, 404);
+  const response = await fetch(`${baseUrl}/api/versions/${firstVersion}/route-calculation`, request);
+  assert.equal(response.status, 501);
+  assert.equal((await response.json()).detail, 'Routeberekening is nog niet beschikbaar.');
+});
+
 test('GeoJSON is available only for its current report', async () => {
   const url = `${baseUrl}/api/versions/${secondVersion}/osm-geometry`;
   assert.equal((await fetch(url)).status, 404);

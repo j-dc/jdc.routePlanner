@@ -1,0 +1,14 @@
+@baseUrl = http://routing-api.localtest.me
+@version = 20261117T1234561234567Z
+
+### Placeholder voor een bestaande planningsversie
+POST {{baseUrl}}/api/versions/{{version}}/route-calculation
+Content-Type: application/json
+
+{}
+
+### Onbekende planningsversie
+POST {{baseUrl}}/api/versions/invalid/route-calculation
+Content-Type: application/json
+
+{}

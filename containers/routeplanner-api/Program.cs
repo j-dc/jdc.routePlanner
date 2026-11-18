@@ -165,6 +165,18 @@ app.MapGet("/api/versions/{version}", (string version) =>
         ? Results.Ok(new { id = version })
         : Results.NotFound());
 
+app.MapPost("/api/versions/{version}/route-calculation", (string version) =>
+{
+    if (!InputCsvStore.IsVersion(version) || !File.Exists(InputCsvStore.InputPath(inputCsvPath, version)))
+        return Results.NotFound();
+    return Results.Problem("Routeberekening is nog niet beschikbaar.", statusCode: StatusCodes.Status501NotImplemented);
+})
+.WithName("CalculateRoute")
+.WithSummary("Start routeberekening voor een planningsversie")
+.WithDescription("Placeholder: routeberekening is nog niet geïmplementeerd.")
+.ProducesProblem(StatusCodes.Status501NotImplemented)
+.Produces(StatusCodes.Status404NotFound);
+
 app.MapGet("/api/versions/{version}/address-check", async (string version, HttpClient client, CancellationToken cancellationToken) =>
 {
     if (GetReviewStore(version) is null) return Results.NotFound();

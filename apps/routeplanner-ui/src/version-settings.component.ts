@@ -1,5 +1,5 @@
 import { CommonModule } from '@angular/common';
-import { HttpClient } from '@angular/common/http';
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { Component, Input, OnChanges, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { environment } from './environment';
@@ -51,6 +51,11 @@ interface SettingRow { key: string; value: string; saved: string; busy: boolean;
         <button type="submit" [disabled]="!newKey.trim() || adding">Toevoegen</button>
       </form>
     </section>
+    <section class="settings" aria-labelledby="route-calculation-title">
+      <h2 id="route-calculation-title">Routeberekening</h2>
+      <button type="button" (click)="calculateRoute()" [disabled]="routeBusy">{{ routeBusy ? 'Bezig…' : 'Bereken route' }}</button>
+      <p class="settings-error" *ngIf="routeMessage" role="alert">{{ routeMessage }}</p>
+    </section>
   `,
   styles: [`
     :host { display: block; }
@@ -84,6 +89,8 @@ export class VersionSettingsComponent implements OnChanges {
   loading = false;
   adding = false;
   error = '';
+  routeBusy = false;
+  routeMessage = '';
   private readonly http = inject(HttpClient);
   private get url(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/settings`; }
 
@@ -94,6 +101,8 @@ export class VersionSettingsComponent implements OnChanges {
     this.startSearched = false;
     this.startQuery = '';
     this.error = '';
+    this.routeBusy = false;
+    this.routeMessage = '';
     if (!this.version || this.version === 'new') return;
     const version = this.version;
     this.loading = true;
@@ -109,6 +118,22 @@ export class VersionSettingsComponent implements OnChanges {
   }
 
   private get startUrl(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/start-location`; }
+
+  calculateRoute(): void {
+    const version = this.version;
+    this.routeBusy = true;
+    this.routeMessage = '';
+    this.http.post(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(version)}/route-calculation`, {}).subscribe({
+      next: () => { if (version === this.version) this.routeBusy = false; },
+      error: (error: unknown) => {
+        if (version !== this.version) return;
+        this.routeMessage = error instanceof HttpErrorResponse && error.status === 501
+          ? 'Routeberekening is nog niet beschikbaar.'
+          : 'De routeberekening kon niet worden gestart.';
+        this.routeBusy = false;
+      }
+    });
+  }
 
   searchStart(): void {
     this.startBusy = true;
