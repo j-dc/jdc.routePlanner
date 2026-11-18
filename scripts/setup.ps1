@@ -125,6 +125,34 @@ else {
     Write-Output 'De bestaande OSM-extract blijft behouden.'
 }
 
+$valhallaDataDirectory = if ($env:VALHALLA_DATA_DIR -and [System.IO.Path]::IsPathRooted($env:VALHALLA_DATA_DIR)) {
+    [System.IO.Path]::GetFullPath($env:VALHALLA_DATA_DIR)
+}
+elseif ($env:VALHALLA_DATA_DIR) {
+    [System.IO.Path]::GetFullPath((Join-Path -Path $repositoryRoot -ChildPath $env:VALHALLA_DATA_DIR))
+}
+else {
+    [System.IO.Path]::GetFullPath((Join-Path -Path $repositoryRoot -ChildPath '..\jdc.routePlanner-private-data\valhalla'))
+}
+$valhallaTileDirectory = Join-Path -Path $valhallaDataDirectory -ChildPath 'valhalla_tiles'
+$hasValhallaTiles = (Test-Path -LiteralPath (Join-Path -Path $valhallaDataDirectory -ChildPath 'valhalla.json') -PathType Leaf) -and
+    (Test-Path -LiteralPath $valhallaTileDirectory -PathType Container) -and
+    $null -ne (Get-ChildItem -LiteralPath $valhallaTileDirectory -Filter '*.gph' -File -Recurse |
+        Where-Object { $_.Length -gt 0 } | Select-Object -First 1)
+
+if ($Force.IsPresent -or -not $hasValhallaTiles) {
+    if (-not $hasValhallaTiles) {
+        Write-Output 'Valhalla-tegels niet gevonden. Deze worden nu gebouwd.'
+    }
+    else {
+        Write-Output 'Bestaande Valhalla-tegels worden opnieuw gebouwd.'
+    }
+    & (Join-Path -Path $PSScriptRoot -ChildPath 'buildValhallaTiles.ps1') -ComposeFile $SetupComposeFile -Confirm:$false
+}
+else {
+    Write-Output 'De bestaande Valhalla-tegels blijven behouden. Gebruik --force om ze opnieuw te bouwen.'
+}
+
 $inspectionOutput = @(& docker @composeArguments run --rm --no-deps photon inspect-database)
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not inspect the Photon geocoder database.'
