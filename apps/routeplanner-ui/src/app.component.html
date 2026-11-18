@@ -106,7 +106,7 @@
   <div class="notice error-notice" *ngIf="checkStatusError" role="alert">{{ checkStatusError }}</div>
   <div class="notice success-notice" *ngIf="savedMessage" role="status">{{ savedMessage }}</div>
 
-  <section class="check-state" *ngIf="checkRunning" role="status">Automatische adresmaching</section>
+  <section class="check-state" *ngIf="checkRunning" role="status">Automatische adrescontrole loopt...</section>
   <section class="check-state" *ngIf="checkBusy" role="status">Er loopt een adrescontrole voor een andere versie.</section>
   <section class="check-state" *ngIf="checkMissing && !checkRunning && !checkBusy">
     <p>Er is nog geen adrescontrole voor deze versie uitgevoerd.</p>

@@ -2,7 +2,7 @@
 
 Dit project helpt een pakketbezorger om afleverroutes te plannen. Je geeft een lijst met adressen op en kiest hoeveel ritten er nodig zijn of hoeveel chauffeurs beschikbaar zijn. Het programma controleert de adressen, verdeelt de leveringen over de chauffeurs en probeert het totale aantal gereden kilometers zo klein mogelijk te maken. Het resultaat bestaat uit kaarten en adressenlijsten in de juiste volgorde. Ook vergelijkt het programma de nieuwe routes met de bestaande routes, zodat je kunt zien of er kilometers worden bespaard.
 
-Alle effectieve workflowstappen draaien in containers, inclusief de PowerShell-entrypoints. Scripts in `./scripts/` zijn dunne hostlaunchers: `setup.ps1` bouwt centraal alle benodigde containerimages en kan databereiding uitvoeren; `start.ps1` start de langlopende services zonder build of health-wait; de overige scripts voeren hun eenmalige workflowcontainer uit met vooraf gebouwde images. De host voert zelf geen workflow- of dataverwerkingslogica uit. De workflow plant pakketbezorging voor ongeveer 400 adressen en een lijst van ongeveer 10 chauffeurs. Per planning wordt óf het gewenste aantal ritten óf het aantal in te zetten chauffeurs opgegeven. Iedere geselecteerde chauffeur krijgt minstens één levering; het doel is de totale afstand over alle ritten te minimaliseren. Iedere chauffeur ontvangt een kaart van de toegewezen route op een OSM-achtergrondkaart en een adressenlijst in de juiste stopvolgorde. OSM-data en Valhalla-tegels worden in containers voorbereid of bijgewerkt buiten een normale planningsrun. Adresgeocodering is een aparte stap: OSM-routeringsdata zet adressen niet vanzelf om naar coördinaten.
+Alle effectieve workflowstappen draaien in containers, inclusief de PowerShell-entrypoints. Scripts in `./scripts/` zijn dunne hostlaunchers: `setup.ps1` bouwt centraal alle benodigde containerimages en kan databereiding uitvoeren; `start.ps1` start de langlopende services zonder build of health-wait; `stop.ps1` stopt de containers uit beide Compose-stacks zonder volumes of data te verwijderen; de overige scripts voeren hun eenmalige workflowcontainer uit met vooraf gebouwde images. De host voert zelf geen workflow- of dataverwerkingslogica uit. De workflow plant pakketbezorging voor ongeveer 400 adressen en een lijst van ongeveer 10 chauffeurs. Per planning wordt óf het gewenste aantal ritten óf het aantal in te zetten chauffeurs opgegeven. Iedere geselecteerde chauffeur krijgt minstens één levering; het doel is de totale afstand over alle ritten te minimaliseren. Iedere chauffeur ontvangt een kaart van de toegewezen route op een OSM-achtergrondkaart en een adressenlijst in de juiste stopvolgorde. OSM-data en Valhalla-tegels worden in containers voorbereid of bijgewerkt buiten een normale planningsrun. Adresgeocodering is een aparte stap: OSM-routeringsdata zet adressen niet vanzelf om naar coördinaten.
 
 ## Invoerbestand
 
@@ -53,6 +53,8 @@ De broker-integratietests in `tests/AddressCheckBroker.Tests.mjs` gebruiken een 
 ## Entrypoints
 
 De namen hieronder zijn de container-entrypoints. `CheckAddresses`, `UpdateGeocodeDatabase` en de adresreview zijn geïmplementeerd; de overige entrypoints zijn nog voorstellen. Alle runtime-services staan samen in `compose.yaml`. De setup-jobs FetchOsm en UpdateGeocodeDatabase staan apart in `compose.setup.yaml`. Scripts in `./scripts/` zijn dunne hostlaunchers; het effectieve werk gebeurt in containers. `./scripts/setup.ps1` valideert en bouwt de runtime-images, haalt Traefik op, bouwt beide setup-jobs en controleert daarna het OSM-extract en de Photon-database. Setup start geen langlopende services. `./scripts/start.ps1` start Photon, de reviewwebsite, API en Traefik uit de hoofdstack met bestaande images; het voert geen build, pull of health-wait uit. De overige workflowlaunchers gebruiken eveneens uitsluitend vooraf gebouwde images. `./scripts/checkAddresses.ps1` start de adrescontrole met Photon uit de hoofdstack. `./scripts/reviewAddresses.ps1` start Photon en de reviewservices uit diezelfde stack. `./scripts/updateGeocodeDatabase.ps1` voert de database-updatejob uit `compose.setup.yaml` uit en stopt/herstart Photon zo nodig in `compose.yaml`.
+
+`./scripts/stop.ps1` stopt alle containers uit `compose.yaml` en `compose.setup.yaml`, inclusief het maintenance-profiel. Het script valideert beide Compose-configuraties en controleert de Docker-daemon. Het gebruikt `docker compose stop`, niet `down`: containers blijven behouden en volumes, invoerbestanden, rapporten, OSM-data en Photon-data worden niet verwijderd. Gebruik `./scripts/stop.ps1 -WhatIf` om de actie eerst te simuleren; `-Confirm` vraagt bevestiging.
 
 | EntryPoint | Moment | Verantwoordelijkheid in de container |
 | --- | --- | --- |
@@ -112,6 +114,8 @@ flowchart TD
 		E2 --> S4["Host start ./scripts/start.ps1"]
 		E6 --> S4
 		S4 --> S5["Start Photon, web, API en Traefik zonder build of health-wait"]
+		S5 -. "na gebruik" .-> S6["Host start ./scripts/stop.ps1"]
+		S6 --> S7["Stop runtime- en setupcontainers; behoud volumes en data"]
 	end
 
 	subgraph Planning["Per planningsrun"]
