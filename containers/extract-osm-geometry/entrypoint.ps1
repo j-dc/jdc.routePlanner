@@ -58,7 +58,8 @@ function Invoke-GeometryExtraction {
     $reportPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_REPORT_DIR' '/source') "address-check$suffix.json"
     $outputPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_OUTPUT_DIR' '/output') "osm-geometry$suffix.geojson"
     $osmPath = Get-EnvironmentValue 'OSM_PBF_PATH' '/osm/belgium-latest.osm.pbf'
-    $settingsPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_SETTINGS_DIR' '/settings') (if ($version -eq 'legacy') { 'settings.json' } else { "settings-$version.json" })
+    $settingsFileName = if ($version -eq 'legacy') { 'settings.json' } else { "settings-$version.json" }
+    $settingsPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_SETTINGS_DIR' '/source') $settingsFileName
 
     $reportBytes = [System.IO.File]::ReadAllBytes($reportPath)
     $report = [System.Text.Encoding]::UTF8.GetString($reportBytes) | ConvertFrom-Json -Depth 100

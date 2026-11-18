@@ -19,6 +19,37 @@ services:
     cap_drop:
       - ALL
 
+  build-valhalla-tiles:
+    profiles:
+      - maintenance
+    image: ghcr.io/valhalla/valhalla-scripted:3.9.3
+    command: ["build_tiles"]
+    environment:
+      serve_tiles: "False"
+      force_rebuild: "True"
+      build_time_zones: "False"
+      build_elevation: "False"
+      build_admins: "True"
+      use_default_speeds_config: "False"
+      tile_urls: ""
+      server_threads: "4"
+    volumes:
+      - type: bind
+        source: ${VALHALLA_DATA_DIR:-../jdc.routePlanner-private-data/valhalla}
+        target: /custom_files
+      - type: bind
+        source: ${OSM_DATA_DIR:-../jdc.routePlanner-private-data/osm}/belgium-latest.osm.pbf
+        target: /custom_files/belgium-latest.osm.pbf
+        read_only: true
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
   update-geocode-database:
     profiles:
       - maintenance

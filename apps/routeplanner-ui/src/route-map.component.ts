@@ -12,9 +12,15 @@ import { fromLonLat } from 'ol/proj';
 import Cluster from 'ol/source/Cluster';
 import OSM from 'ol/source/OSM';
 import VectorSource from 'ol/source/Vector';
-import { Circle as CircleStyle, Fill, Stroke, Style, Text } from 'ol/style';
+import { Circle as CircleStyle, Fill, Icon, Stroke, Style, Text } from 'ol/style';
 import { Subscription } from 'rxjs';
 import { environment } from './environment';
+
+const START_MARKER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="44" height="54" viewBox="0 0 44 54">
+  <path d="M22 52C22 52 4 34 4 21a18 18 0 0 1 36 0c0 13-18 31-18 31z" fill="#b04d25" stroke="#ffffff" stroke-width="3" stroke-linejoin="round"/>
+  <path d="M22 11 10.5 21.5h3.5V31h16v-9.5h3.5z" fill="#ffffff"/>
+  <rect x="19" y="23.5" width="6" height="7.5" fill="#b04d25"/>
+</svg>`;
 
 export interface MapLocation {
   recordNumber: number;
@@ -36,7 +42,7 @@ export interface MapLocation {
       </header>
       <p class="map-warning" *ngIf="missingCount" role="alert">{{ missingCount }} leveringen hebben geen bruikbare bevestigde coördinaten.</p>
       <div class="geometry-notice" [class.missing-contours]="!geometryRunning && !geometryBusy && !geometryError && missingContours" *ngIf="geometryError || missingContours || geometryRunning || geometryBusy" role="status">
-        <span *ngIf="geometryRunning">Lokale geometrie wordt geladen...</span>
+        <span *ngIf="geometryRunning">Lokale geometrie wordt gerendered...</span>
         <span *ngIf="!geometryRunning && geometryBusy">Er loopt al een andere verwerking.</span>
         <span *ngIf="!geometryRunning && !geometryBusy && geometryError">{{ geometryError }}</span>
         <span *ngIf="!geometryRunning && !geometryBusy && !geometryError && missingContours">Voor {{ missingContours }} leveringen is geen lokale contour beschikbaar.</span>
@@ -96,6 +102,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   missingContours = 0;
   private readonly source = new VectorSource<Feature<Point>>();
   private readonly geometrySource = new VectorSource();
+  private readonly startSource = new VectorSource();
   private geometrySubscription: Subscription | null = null;
   private statusSubscription: Subscription | null = null;
   private startSubscription: Subscription | null = null;
@@ -129,7 +136,18 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
           fill: new Fill({ color: 'rgba(230, 129, 58, 0.3)' }),
           stroke: new Stroke({ color: '#b04d25', width: 3 }),
         }),
-      }), markers],
+      }), markers, new VectorLayer({
+        source: this.startSource,
+        zIndex: 10,
+        style: new Style({
+          image: new Icon({
+            src: `data:image/svg+xml;charset=utf-8,${encodeURIComponent(START_MARKER_SVG)}`,
+            anchor: [0.5, 1],
+            width: 44,
+            height: 54,
+          }),
+        }),
+      })],
       view: new View({ center: fromLonLat([3.3, 50.9]), zoom: 10 }),
     });
     this.map.on('singleclick', event => {
@@ -177,6 +195,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.geometryError = '';
     this.geometryData = null;
     this.geometrySource.clear();
+    this.startSource.clear();
     this.geometrySubscription = this.http.get<object>(`${environment.reviewApiUrl}/api/versions/${this.version}/osm-geometry`).subscribe({
       next: data => {
         this.geometryData = data;
@@ -247,9 +266,12 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
 
   private updateGeometry(): void {
     this.geometrySource.clear();
+    this.startSource.clear();
     if (!this.geometryData) return;
+    const allFeatures = new GeoJSON().readFeatures(this.geometryData, { featureProjection: 'EPSG:3857' });
+    this.startSource.addFeatures(allFeatures.filter(feature => feature.get('isStartLocation') === true && feature.getGeometry()?.getType() === 'Point'));
     const selectedIds = new Set(this.locations.map(location => location.candidateId).filter((id): id is string => !!id));
-    const features = new GeoJSON().readFeatures(this.geometryData, { featureProjection: 'EPSG:3857' })
+    const features = allFeatures
       .filter(feature => selectedIds.has(String(feature.getId())) && feature.getGeometry()?.getType() !== 'Point');
     const foundIds = new Set(features.map(feature => String(feature.getId())));
     this.source.getFeatures().forEach(feature => {

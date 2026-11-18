@@ -171,3 +171,21 @@ Describe 'extract-osm-geometry entrypoint' {
         finally { Remove-Item -LiteralPath $directory -Recurse -Force }
     }
 
+    It 'does not replace the output when the PBF is invalid' {
+        $directory = New-TestDirectory
+        try {
+            $report = @{ Results = @(@{ CsvRecordNumber = 2; Status = 'valid'; Longitude = 3.01; Latitude = 50.0
+                        Candidates = @(@{ CandidateId = 'W/10'; GeometryIsValid = $true; Longitude = 3.01; Latitude = 50.0 }) }) }
+            [System.IO.File]::WriteAllText("$directory/address-check-$script:Version.json", ($report | ConvertTo-Json -Depth 10))
+            Set-Content -LiteralPath "$directory/invalid.pbf" -Value 'invalid'
+            $output = "$directory/osm-geometry-$script:Version.geojson"
+            Set-Content -LiteralPath $output -Value 'existing'
+            $exitCode = Invoke-Extraction $directory @{ CHECK_ADDRESSES_VERSION = $script:Version; GEOMETRY_REPORT_DIR = $directory
+                GEOMETRY_OUTPUT_DIR = $directory; OSM_PBF_PATH = "$directory/invalid.pbf" }
+            $exitCode | Should -Not -Be 0
+            (Get-Content -LiteralPath $output -Raw).Trim() | Should -Be 'existing'
+        }
+        finally { Remove-Item -LiteralPath $directory -Recurse -Force }
+    }
+}
+
