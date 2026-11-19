@@ -1,12 +1,20 @@
 import { CommonModule } from '@angular/common';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { Component, Input, OnChanges, OnDestroy, inject } from '@angular/core';
+import { Component, EventEmitter, Input, OnChanges, OnDestroy, Output, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { environment } from './environment';
 
 interface StartLocation { label: string; latitude: number; longitude: number; [field: string]: unknown; }
 interface SettingRow { key: string; value: string; saved: string; busy: boolean; }
 interface MatrixStatus { state: 'idle' | 'running' | 'busy' | 'completed' | 'failed' | 'stale'; message?: string; }
+interface RouteResult {
+  metadata: { actualDifferenceSeconds: number };
+  totalDistanceMeters: number;
+  routes: { driver: number; durationSeconds: number; serviceDurationSeconds: number; totalDurationSeconds: number;
+    reloadDurationSeconds: number; distanceMeters: number;
+    stops: { csvRecordNumber: number }[];
+    trips: { packageCount: number; stops: { csvRecordNumber: number }[] }[] }[];
+}
 
 @Component({
   selector: 'app-version-settings',
@@ -42,35 +50,68 @@ interface MatrixStatus { state: 'idle' | 'running' | 'busy' | 'completed' | 'fai
           <input id="setting-nmbDrivers" type="text" inputmode="numeric" maxlength="1000" [(ngModel)]="drivers.value" [disabled]="loading || !settingsLoaded || drivers.busy">
           <button type="button" (click)="save(drivers)" [disabled]="loading || !settingsLoaded || drivers.busy || drivers.value === drivers.saved || !validDriverCount">Opslaan</button>
         </li>
-      </ul>
-      <p class="settings-error" *ngIf="drivers.value && !validDriverCount">Vul een positief geheel aantal chauffeurs in.</p>
-      <h3>Overige instellingen</h3>
-      <p class="settings-empty" *ngIf="!loading && !rows.length">Nog geen instellingen voor deze versie.</p>
-      <ul class="settings-list">
-        <li *ngFor="let row of rows">
-          <label [for]="'setting-' + row.key">{{ row.key }}</label>
-          <input [id]="'setting-' + row.key" type="text" maxlength="1000" [(ngModel)]="row.value" [disabled]="row.busy">
-          <button type="button" (click)="save(row)" [disabled]="row.busy || row.value === row.saved">Opslaan</button>
-          <button type="button" class="danger" (click)="remove(row)" [disabled]="row.busy">Verwijderen</button>
+        <li>
+          <label for="setting-serviceSeconds">LeverTijd (sec)</label>
+          <input id="setting-serviceSeconds" type="text" inputmode="numeric" maxlength="1000" [(ngModel)]="serviceSeconds.value" [disabled]="loading || !settingsLoaded || serviceSeconds.busy">
+          <button type="button" (click)="save(serviceSeconds)" [disabled]="loading || !settingsLoaded || serviceSeconds.busy || serviceSeconds.value === serviceSeconds.saved || !validServiceSeconds">Opslaan</button>
+        </li>
+        <li>
+          <label for="setting-Capacity">Capaciteit</label>
+          <input id="setting-Capacity" type="text" inputmode="numeric" maxlength="1000" [(ngModel)]="capacity.value" [disabled]="loading || !settingsLoaded || capacity.busy">
+          <button type="button" (click)="save(capacity)" [disabled]="loading || !settingsLoaded || capacity.busy || capacity.value === capacity.saved || !validCapacity">Opslaan</button>
+        </li>
+        <li>
+          <label for="setting-reloadSeconds">Laadtijd depot (sec)</label>
+          <input id="setting-reloadSeconds" type="text" inputmode="numeric" maxlength="1000" [(ngModel)]="reloadSeconds.value" [disabled]="loading || !settingsLoaded || reloadSeconds.busy">
+          <button type="button" (click)="save(reloadSeconds)" [disabled]="loading || !settingsLoaded || reloadSeconds.busy || reloadSeconds.value === reloadSeconds.saved || !validReloadSeconds">Opslaan</button>
+        </li>
+        <li>
+          <label for="setting-maxDifferenceMinutes">Maximaal tijdsverschil (min)</label>
+          <input id="setting-maxDifferenceMinutes" type="text" inputmode="numeric" maxlength="1000" [(ngModel)]="maxDifferenceMinutes.value" [disabled]="loading || !settingsLoaded || maxDifferenceMinutes.busy">
+          <button type="button" (click)="save(maxDifferenceMinutes)" [disabled]="loading || !settingsLoaded || maxDifferenceMinutes.busy || maxDifferenceMinutes.value === maxDifferenceMinutes.saved || !validMaxDifferenceMinutes">Opslaan</button>
         </li>
       </ul>
-      <form class="settings-add" (ngSubmit)="add()">
-        <input name="new-key" type="text" placeholder="Sleutel (bv. startLocatie)" maxlength="64" pattern="[A-Za-z0-9_.\\-]+" [(ngModel)]="newKey" aria-label="Nieuwe sleutel">
-        <input name="new-value" type="text" placeholder="Waarde" maxlength="1000" [(ngModel)]="newValue" aria-label="Nieuwe waarde">
-        <button type="submit" [disabled]="!newKey.trim() || adding">Toevoegen</button>
-      </form>
+      <p class="settings-error" *ngIf="drivers.value && !validDriverCount">Vul een positief geheel aantal chauffeurs in.</p>
+      <p class="settings-error" *ngIf="!validServiceSeconds && settingsLoaded">Vul een positief geheel aantal seconden in (maximaal 2147483647).</p>
+      <p class="settings-error" *ngIf="!validCapacity && settingsLoaded">Vul een positief geheel getal voor de capaciteit in (maximaal 2147483647).</p>
+      <p class="settings-error" *ngIf="!validReloadSeconds && settingsLoaded">Vul een niet-negatief geheel aantal seconden laadtijd in (maximaal 2147483647).</p>
+      <p class="settings-error" *ngIf="!validMaxDifferenceMinutes && settingsLoaded">Vul een niet-negatief geheel tijdsverschil in minuten in (maximaal 2147483647).</p>
+      <p class="settings-empty">Capaciteit is het maximum aantal pakketten per rit. Laadtijd geldt bij tussentijdse terugkeer naar het depot.</p>
     </section>
     <section class="settings" aria-labelledby="route-calculation-title">
       <h2 id="route-calculation-title">Routeberekening</h2>
       <div class="calculation-actions">
         <button type="button" (click)="calculateMatrix()" [disabled]="matrixBusy || matrixState === null || matrixState === 'running' || matrixState === 'busy'">{{ matrixState === 'running' || matrixBusy ? 'Bezig…' : 'Bereken Matrix' }}</button>
-        <button type="button" (click)="calculateRoute()" [disabled]="routeBusy">{{ routeBusy ? 'Bezig…' : 'Bereken route' }}</button>
+        <button type="button" (click)="calculateRoute()" [disabled]="routeBusy || routeState === null || routeState === 'running' || routeState === 'busy'">{{ routeState === 'running' || routeBusy ? 'Bezig…' : 'Bereken route' }}</button>
       </div>
       <p class="settings-error" *ngIf="matrixMessage" role="alert">{{ matrixMessage }}</p>
       <p class="settings-empty" *ngIf="matrixState === 'running'">Matrixberekening loopt.</p>
       <p class="settings-empty" *ngIf="matrixState === 'busy'">Een matrixberekening voor een andere versie loopt.</p>
       <p class="settings-empty" *ngIf="matrixState === 'completed'">Matrixberekening voltooid.</p>
       <p class="settings-error" *ngIf="routeMessage" role="alert">{{ routeMessage }}</p>
+      <p class="settings-empty" *ngIf="routeState === 'running'">Routeberekening loopt.</p>
+      <p class="settings-empty" *ngIf="routeState === 'busy'">Een routeberekening voor een andere versie loopt.</p>
+      <div *ngIf="routeResult as result">
+        <h3>Nieuwe route indeling</h3>
+        <p>Totale afstand: {{ result.totalDistanceMeters / 1000 | number:'1.1-1' }} km.
+          Verschil in totale duur: {{ result.metadata.actualDifferenceSeconds / 60 | number:'1.0-1' }} minuten.</p>
+        <ul>
+          <li *ngFor="let route of result.routes">
+            Chauffeur {{ route.driver }}: {{ route.stops.length }} leveringen, {{ route.trips.length }} ritten,
+            {{ route.totalDurationSeconds / 60 | number:'1.0-1' }} minuten totaal
+            ({{ route.durationSeconds / 60 | number:'1.0-1' }} rijden +
+            {{ route.serviceDurationSeconds / 60 | number:'1.0-1' }} leveren +
+            {{ route.reloadDurationSeconds / 60 | number:'1.0-1' }} herladen),
+            {{ route.distanceMeters / 1000 | number:'1.1-1' }} km.
+            <div>Ritten en CSV-recordnummers in stopvolgorde
+              <p *ngFor="let trip of route.trips; let index = index">
+                Rit {{ index + 1 }} ({{ trip.packageCount }} pakketten):
+                <span *ngFor="let stop of trip.stops; let last = last">{{ stop.csvRecordNumber }}{{ last ? '' : ', ' }}</span>
+              </p>
+            </div>
+          </li>
+        </ul>
+      </div>
     </section>
   `,
   styles: [`
@@ -95,33 +136,54 @@ interface MatrixStatus { state: 'idle' | 'running' | 'busy' | 'completed' | 'fai
 })
 export class VersionSettingsComponent implements OnChanges, OnDestroy {
   @Input({ required: true }) version = '';
-  rows: SettingRow[] = [];
+  @Output() routeAvailabilityChange = new EventEmitter<boolean>();
   drivers: SettingRow = { key: 'nmbDrivers', value: '', saved: '', busy: false };
+  serviceSeconds: SettingRow = { key: 'serviceSeconds', value: '60', saved: '', busy: false };
+  capacity: SettingRow = { key: 'Capacity', value: '60', saved: '', busy: false };
+  reloadSeconds: SettingRow = { key: 'reloadSeconds', value: '10', saved: '', busy: false };
+  maxDifferenceMinutes: SettingRow = { key: 'maxDifferenceMinutes', value: '30', saved: '', busy: false };
   settingsLoaded = false;
   startLocation: StartLocation | null = null;
   startQuery = '';
   startResults: StartLocation[] = [];
   startSearched = false;
   startBusy = false;
-  newKey = '';
-  newValue = '';
   loading = false;
-  adding = false;
   error = '';
   matrixBusy = false;
   matrixState: MatrixStatus['state'] | null = null;
   matrixMessage = '';
   routeBusy = false;
+  routeState: MatrixStatus['state'] | null = null;
+  routeResult: RouteResult | null = null;
   routeMessage = '';
   private readonly http = inject(HttpClient);
   private matrixTimer: ReturnType<typeof setTimeout> | undefined;
   private matrixGeneration = 0;
+  private routeTimer: ReturnType<typeof setTimeout> | undefined;
+  private routeGeneration = 0;
   private get url(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/settings`; }
   get validDriverCount(): boolean { return /^0*[1-9][0-9]*$/.test(this.drivers.value); }
+  get validServiceSeconds(): boolean {
+    return /^0*[1-9][0-9]*$/.test(this.serviceSeconds.value) && Number(this.serviceSeconds.value) <= 2147483647;
+  }
+  get validCapacity(): boolean {
+    return /^0*[1-9][0-9]*$/.test(this.capacity.value) && Number(this.capacity.value) <= 2147483647;
+  }
+  get validReloadSeconds(): boolean {
+    return /^[0-9]+$/.test(this.reloadSeconds.value) && Number(this.reloadSeconds.value) <= 2147483647;
+  }
+  get validMaxDifferenceMinutes(): boolean {
+    return /^[0-9]+$/.test(this.maxDifferenceMinutes.value) && Number(this.maxDifferenceMinutes.value) <= 2147483647;
+  }
 
   ngOnChanges(): void {
-    this.rows = [];
+    this.routeAvailabilityChange.emit(false);
     this.drivers = { key: 'nmbDrivers', value: '', saved: '', busy: false };
+    this.serviceSeconds = { key: 'serviceSeconds', value: '60', saved: '', busy: false };
+    this.capacity = { key: 'Capacity', value: '60', saved: '', busy: false };
+    this.reloadSeconds = { key: 'reloadSeconds', value: '10', saved: '', busy: false };
+    this.maxDifferenceMinutes = { key: 'maxDifferenceMinutes', value: '30', saved: '', busy: false };
     this.settingsLoaded = false;
     this.loading = false;
     this.startLocation = null;
@@ -133,11 +195,16 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
     this.matrixState = null;
     this.matrixMessage = '';
     this.routeBusy = false;
+    this.routeState = null;
+    this.routeResult = null;
     this.routeMessage = '';
     clearTimeout(this.matrixTimer);
     const generation = ++this.matrixGeneration;
+    clearTimeout(this.routeTimer);
+    const routeGeneration = ++this.routeGeneration;
     if (!this.version || this.version === 'new') return;
     this.refreshMatrixStatus(generation);
+    this.refreshRouteStatus(routeGeneration);
     const version = this.version;
     this.loading = true;
     this.http.get<{ startLocation: StartLocation | null; settings: Record<string, string> }>(this.url).subscribe({
@@ -146,9 +213,18 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
         this.startLocation = document.startLocation;
         const driverCount = document.settings[this.drivers.key] ?? '';
         this.drivers.value = this.drivers.saved = driverCount;
-        this.rows = Object.entries(document.settings)
-          .filter(([key]) => key !== this.drivers.key)
-          .map(([key, value]) => ({ key, value, saved: value, busy: false }));
+        const serviceSeconds = document.settings[this.serviceSeconds.key];
+        this.serviceSeconds.value = serviceSeconds ?? '60';
+        this.serviceSeconds.saved = serviceSeconds ?? '';
+        const capacity = document.settings[this.capacity.key];
+        this.capacity.value = capacity ?? '60';
+        this.capacity.saved = capacity ?? '';
+        const reloadSeconds = document.settings[this.reloadSeconds.key];
+        this.reloadSeconds.value = reloadSeconds ?? '10';
+        this.reloadSeconds.saved = reloadSeconds ?? '';
+        const maxDifferenceMinutes = document.settings[this.maxDifferenceMinutes.key];
+        this.maxDifferenceMinutes.value = maxDifferenceMinutes ?? '30';
+        this.maxDifferenceMinutes.saved = maxDifferenceMinutes ?? '';
         this.settingsLoaded = true;
         this.loading = false;
       },
@@ -158,7 +234,9 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
 
   ngOnDestroy(): void {
     ++this.matrixGeneration;
+    ++this.routeGeneration;
     clearTimeout(this.matrixTimer);
+    clearTimeout(this.routeTimer);
   }
 
   private get startUrl(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/start-location`; }
@@ -196,6 +274,7 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
     this.http.post(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(version)}/matrix-calculation`, {}).subscribe({
       next: () => {
         if (generation !== this.matrixGeneration) return;
+        this.invalidateRoute();
         this.matrixState = 'running';
         this.matrixBusy = false;
         this.refreshMatrixStatus(generation);
@@ -211,20 +290,87 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
     });
   }
 
-  calculateRoute(): void {
+  private refreshRouteStatus(generation: number): void {
     const version = this.version;
-    this.routeBusy = true;
-    this.routeMessage = '';
-    this.http.post(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(version)}/route-calculation`, {}).subscribe({
-      next: () => { if (version === this.version) this.routeBusy = false; },
-      error: (error: unknown) => {
-        if (version !== this.version) return;
-        this.routeMessage = error instanceof HttpErrorResponse && error.status === 501
-          ? 'Routeberekening is nog niet beschikbaar.'
-          : 'De routeberekening kon niet worden gestart.';
-        this.routeBusy = false;
+    const url = `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(version)}`;
+    this.http.get<MatrixStatus>(`${url}/route-calculation`).subscribe({
+      next: status => {
+        if (generation !== this.routeGeneration) return;
+        this.routeAvailabilityChange.emit(false);
+        if (!['idle', 'running', 'busy', 'completed', 'failed', 'stale'].includes(status.state)) {
+          this.routeState = null;
+          this.routeResult = null;
+          this.routeMessage = 'De routestatus is ongeldig.';
+        } else {
+          this.routeState = status.state;
+          this.routeMessage = status.state === 'failed' || status.state === 'stale'
+            ? (status.message || 'De routeberekening is niet beschikbaar.') : '';
+          if (status.state !== 'completed') this.routeResult = null;
+          else {
+            this.http.get<RouteResult>(`${url}/routes`).subscribe({
+              next: result => {
+                if (generation !== this.routeGeneration || this.routeState !== 'completed') return;
+                this.routeResult = result;
+                this.routeAvailabilityChange.emit(true);
+              },
+              error: () => {
+                if (generation === this.routeGeneration) {
+                  this.routeResult = null;
+                  this.routeMessage = 'De routes konden niet worden geladen.';
+                  this.routeTimer = setTimeout(() => this.refreshRouteStatus(generation), 3000);
+                }
+              }
+            });
+            return;
+          }
+        }
+        this.routeTimer = setTimeout(() => this.refreshRouteStatus(generation), 3000);
+      },
+      error: () => {
+        if (generation !== this.routeGeneration) return;
+        this.routeAvailabilityChange.emit(false);
+        this.routeState = null;
+        this.routeResult = null;
+        this.routeMessage = 'De routestatus is niet beschikbaar.';
+        this.routeTimer = setTimeout(() => this.refreshRouteStatus(generation), 3000);
       }
     });
+  }
+
+  calculateRoute(): void {
+    const version = this.version;
+    const generation = ++this.routeGeneration;
+    clearTimeout(this.routeTimer);
+    this.routeBusy = true;
+    this.routeAvailabilityChange.emit(false);
+    this.routeState = null;
+    this.routeResult = null;
+    this.routeMessage = '';
+    this.http.post(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(version)}/route-calculation`, {}).subscribe({
+      next: () => {
+        if (generation !== this.routeGeneration) return;
+        this.routeState = 'running';
+        this.routeBusy = false;
+        this.refreshRouteStatus(generation);
+      },
+      error: (error: unknown) => {
+        if (generation !== this.routeGeneration) return;
+        this.routeMessage = error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
+          ? error.error.detail : 'De routeberekening kon niet worden gestart.';
+        this.routeBusy = false;
+        this.routeTimer = setTimeout(() => this.refreshRouteStatus(generation), 3000);
+      }
+    });
+  }
+
+  private invalidateRoute(): void {
+    if (!this.routeResult) return;
+    ++this.routeGeneration;
+    clearTimeout(this.routeTimer);
+    this.routeResult = null;
+    this.routeState = 'stale';
+    this.routeMessage = 'De invoer of instellingen zijn gewijzigd; bereken de routes opnieuw.';
+    this.routeAvailabilityChange.emit(false);
   }
 
   searchStart(): void {
@@ -240,7 +386,7 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
     this.startBusy = true;
     this.error = '';
     this.http.put<StartLocation>(this.startUrl, result).subscribe({
-      next: saved => { this.startLocation = saved; this.startResults = []; this.startSearched = false; this.startQuery = ''; this.startBusy = false; },
+      next: saved => { this.startLocation = saved; this.startResults = []; this.startSearched = false; this.startQuery = ''; this.startBusy = false; this.invalidateRoute(); },
       error: () => { this.error = 'De startlocatie kon niet worden opgeslagen.'; this.startBusy = false; }
     });
   }
@@ -248,29 +394,8 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
   clearStart(): void {
     this.startBusy = true;
     this.http.delete(this.startUrl).subscribe({
-      next: () => { this.startLocation = null; this.startBusy = false; },
+      next: () => { this.startLocation = null; this.startBusy = false; this.invalidateRoute(); },
       error: () => { this.error = 'De startlocatie kon niet worden verwijderd.'; this.startBusy = false; }
-    });
-  }
-
-  add(): void {
-    const key = this.newKey.trim();
-    if (!key) return;
-    if (key === this.drivers.key) {
-      this.error = 'Gebruik het vaste veld Aantal Chauffeurs voor deze instelling.';
-      return;
-    }
-    this.adding = true;
-    this.error = '';
-    this.http.put<{ key: string; value: string }>(`${this.url}/${encodeURIComponent(key)}`, { value: this.newValue }).subscribe({
-      next: result => {
-        const existing = this.rows.find(row => row.key === result.key);
-        if (existing) { existing.value = existing.saved = result.value; }
-        else this.rows.push({ key: result.key, value: result.value, saved: result.value, busy: false });
-        this.newKey = this.newValue = '';
-        this.adding = false;
-      },
-      error: () => { this.error = 'De instelling kon niet worden opgeslagen. Controleer de sleutel.'; this.adding = false; }
     });
   }
 
@@ -278,17 +403,8 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
     row.busy = true;
     this.error = '';
     this.http.put<{ value: string }>(`${this.url}/${encodeURIComponent(row.key)}`, { value: row.value }).subscribe({
-      next: result => { row.value = row.saved = result.value; row.busy = false; },
+      next: result => { row.value = row.saved = result.value; row.busy = false; this.invalidateRoute(); },
       error: () => { this.error = `'${row.key}' kon niet worden opgeslagen.`; row.busy = false; }
-    });
-  }
-
-  remove(row: SettingRow): void {
-    row.busy = true;
-    this.error = '';
-    this.http.delete(`${this.url}/${encodeURIComponent(row.key)}`).subscribe({
-      next: () => { this.rows = this.rows.filter(candidate => candidate !== row); },
-      error: () => { this.error = `'${row.key}' kon niet worden verwijderd.`; row.busy = false; }
     });
   }
 }

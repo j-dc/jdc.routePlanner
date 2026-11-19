@@ -6,7 +6,7 @@ import { after, before, test } from 'node:test';
 
 const baseUrl = 'http://127.0.0.1:8080';
 const header = 'rit;naam;straat;nr.;postcode;gemeente;aantal;bellen;Opmerking;opmerking;klas';
-const csv = `${header}\r\n1;Test;"Straat; deel";12;8500;Teststad;;;;;`;
+const csv = `${header}\r\n1;Test;"Straat; deel";12;8500;Teststad;1;;;;`;
 let firstVersion;
 let secondVersion;
 let brokerState = 'idle';
@@ -16,6 +16,9 @@ let geometryState = 'idle';
 let geometryStartCount = 0;
 let matrixState = 'idle';
 let matrixInput;
+let routeState = 'idle';
+let routeInput;
+let geometryAvailable = true;
 const services = createServer(async (request, response) => {
   if (request.url === '/photon') {
     response.writeHead(photonReady ? 200 : 503);
@@ -34,6 +37,23 @@ const services = createServer(async (request, response) => {
     matrixState = 'running';
     response.writeHead(202);
     return response.end(JSON.stringify({ state: matrixState }));
+  }
+  if (request.url.startsWith('/route/status/')) return response.end(JSON.stringify({ state: routeState }));
+  if (request.url.startsWith('/route/geometry/')) {
+    if (!geometryAvailable) { response.writeHead(503); return response.end('{}'); }
+    return response.end(JSON.stringify({ type: 'FeatureCollection', features: [] }));
+  }
+  if (request.url === '/route/start') {
+    if (routeState === 'running') {
+      response.writeHead(409);
+      return response.end('{}');
+    }
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    routeInput = JSON.parse(body);
+    routeState = 'running';
+    response.writeHead(202);
+    return response.end(JSON.stringify({ state: routeState }));
   }
   if (request.url.startsWith('/geometry/status/')) return response.end(JSON.stringify({ state: geometryState }));
   if (request.url.startsWith('/geometry/start/')) {
@@ -146,25 +166,126 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   assert.equal((await (await fetch(url)).json()).state, 'stale');
   const fingerprint = createHash('sha256').update(JSON.stringify(matrixInput.locations)).digest('hex').toUpperCase();
   await writeFile(`/source/matrix-${version}.json`, JSON.stringify({ metadata: {
+    version,
     reviewFingerprint: matrixInput.reviewFingerprint, reviewUpdatedAtUtc: matrixInput.reviewUpdatedAtUtc,
-    locationFingerprint: fingerprint
+    locationFingerprint: fingerprint, locations: matrixInput.locations
   } }));
   assert.equal((await (await fetch(url)).json()).state, 'completed');
+  await writeFile(`/source/matrix-${version}.json`, JSON.stringify({ metadata: {
+    version, reviewFingerprint: matrixInput.reviewFingerprint, reviewUpdatedAtUtc: matrixInput.reviewUpdatedAtUtc,
+    locationFingerprint: fingerprint, locations: [{ ...matrixInput.locations[0], latitude: 51 }]
+  } }));
+  assert.equal((await (await fetch(url)).json()).state, 'stale');
+  const routeUrl = `${baseUrl}/api/versions/${version}/route-calculation`;
+  assert.equal((await fetch(routeUrl, post)).status, 409);
   assert.equal((await fetch(`${baseUrl}/api/versions/${version}/start-location`, {
     method: 'PUT', headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ label: 'Test', latitude: 50, longitude: 3 })
   })).status, 200);
   assert.equal((await (await fetch(url)).json()).state, 'stale');
+  const locations = [{ csvRecordNumber: null, latitude: 50, longitude: 3 }, ...matrixInput.locations];
+  const newFingerprint = createHash('sha256').update(JSON.stringify(locations)).digest('hex').toUpperCase();
+  const matrix = JSON.stringify({ metadata: {
+    version, reviewFingerprint: matrixInput.reviewFingerprint, reviewUpdatedAtUtc: matrixInput.reviewUpdatedAtUtc,
+    locationFingerprint: newFingerprint, locations
+  } });
+  await writeFile(`/source/matrix-${version}.json`, matrix);
+  assert.equal((await fetch(routeUrl, post)).status, 409);
+  const driverUrl = `${baseUrl}/api/versions/${version}/settings/nmbDrivers`;
+  const setDrivers = value => fetch(driverUrl, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value })
+  });
+  assert.equal((await setDrivers('0')).status, 200);
+  assert.equal((await fetch(routeUrl, post)).status, 409);
+  assert.equal((await setDrivers('1.5')).status, 200);
+  assert.equal((await fetch(routeUrl, post)).status, 409);
+  assert.equal((await setDrivers('1')).status, 200);
+  assert.equal((await fetch(routeUrl, post)).status, 202);
+  assert.equal(routeInput.driverCount, 1);
+  assert.equal(routeInput.serviceSeconds, 60);
+  assert.equal(routeInput.capacity, 60);
+  assert.equal(routeInput.reloadSeconds, 10);
+  assert.equal(routeInput.maxDifferenceMinutes, 30);
+  assert.deepEqual(routeInput.packageCounts, [1]);
+  assert.equal(routeInput.matrixSha256, createHash('sha256').update(matrix).digest('hex').toUpperCase());
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'running');
+  assert.equal((await fetch(routeUrl, post)).status, 409);
+  await writeFile(`/source/routes-${version}.json`, JSON.stringify({
+    metadata: { version, driverCount: 1, matrixSha256: routeInput.matrixSha256 }, routes: []
+  }));
+  routeState = 'completed';
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  await writeFile(`/source/routes-${version}.json`, JSON.stringify({
+    metadata: { version, driverCount: 1, matrixSha256: routeInput.matrixSha256,
+      serviceTimeModel: 'per-location-visit-v1', serviceSecondsPerVisit: 60 }, routes: []
+  }));
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  await writeFile(`/source/routes-${version}.json`, JSON.stringify({
+    metadata: { version, driverCount: 1, matrixSha256: routeInput.matrixSha256,
+      serviceTimeModel: 'per-location-visit-v1', serviceSecondsPerVisit: 60,
+      optimization: 'vroom-capacity-multitrip-v1', inputSha256: routeInput.inputSha256,
+      capacity: 60, reloadSeconds: 10, maxAllowedDifferenceSeconds: 1800 }, routes: []
+  }));
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'completed');
+  assert.equal((await fetch(`${baseUrl}/api/versions/${version}/routes`)).status, 200);
+  const geometryUrl = `${baseUrl}/api/versions/${version}/route-geometry`;
+  assert.equal((await fetch(geometryUrl)).status, 200);
+  geometryAvailable = false;
+  assert.equal((await fetch(geometryUrl)).status, 503);
+  geometryAvailable = true;
+  const serviceUrl = `${baseUrl}/api/versions/${version}/settings/serviceSeconds`;
+  const setService = value => fetch(serviceUrl, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value })
+  });
+  assert.equal((await setService('90')).status, 200);
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  assert.equal((await fetch(`${baseUrl}/api/versions/${version}/routes`)).status, 409);
+  assert.equal((await fetch(geometryUrl)).status, 409);
+  for (const invalid of ['0', '-1', '1.5', '', '2147483648']) {
+    assert.equal((await setService(invalid)).status, 200);
+    assert.equal((await fetch(routeUrl, post)).status, 409);
+  }
+  assert.equal((await fetch(serviceUrl, { method: 'DELETE' })).status, 204);
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'completed');
+  const setSetting = (key, value) => fetch(`${baseUrl}/api/versions/${version}/settings/${key}`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ value })
+  });
+  assert.equal((await setSetting('Capacity', '2')).status, 200);
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  assert.equal((await setSetting('Capacity', '0')).status, 200);
+  assert.equal((await fetch(routeUrl, post)).status, 409);
+  assert.equal((await setSetting('Capacity', '60')).status, 200);
+  assert.equal((await setSetting('reloadSeconds', '20')).status, 200);
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  assert.equal((await setSetting('reloadSeconds', '10')).status, 200);
+  assert.equal((await setSetting('maxDifferenceMinutes', '45')).status, 200);
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  for (const invalid of ['-1', '1.5', '', '2147483648']) {
+    assert.equal((await setSetting('maxDifferenceMinutes', invalid)).status, 200);
+    assert.equal((await fetch(routeUrl, post)).status, 409);
+  }
+  assert.equal((await setSetting('maxDifferenceMinutes', '0')).status, 200);
+  assert.equal((await fetch(routeUrl, post)).status, 202);
+  assert.equal(routeInput.maxDifferenceMinutes, 0);
+  routeState = 'completed';
+  assert.equal((await setSetting('maxDifferenceMinutes', '30')).status, 200);
+  await writeFile(`/source/matrix-${version}.json`, `${matrix} `);
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  await writeFile(`/source/matrix-${version}.json`, matrix);
+  assert.equal((await setDrivers('2')).status, 200);
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  assert.equal((await fetch(`${baseUrl}/api/versions/${version}/routes`)).status, 409);
+  assert.equal((await fetch(routeUrl, post)).status, 409);
   matrixState = 'idle';
+  routeState = 'idle';
 });
 
-test('route calculation placeholder rejects unknown versions and reports it is not implemented', async () => {
+test('route calculation rejects unknown versions and invalid inputs', async () => {
   const request = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
   assert.equal((await fetch(`${baseUrl}/api/versions/invalid/route-calculation`, request)).status, 404);
   assert.equal((await fetch(`${baseUrl}/api/versions/20000101T0000000000000Z/route-calculation`, request)).status, 404);
   const response = await fetch(`${baseUrl}/api/versions/${firstVersion}/route-calculation`, request);
-  assert.equal(response.status, 501);
-  assert.equal((await response.json()).detail, 'Routeberekening is nog niet beschikbaar.');
+  assert.equal(response.status, 409);
 });
 
 test('GeoJSON is available only for its current report', async () => {

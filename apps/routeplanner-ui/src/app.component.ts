@@ -100,6 +100,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   private reviewDocument: ReviewDocument | null = null;
   mapLocations: MapLocation[] = [];
+  routeAvailable = false;
 
   get document(): ReviewDocument | null { return this.reviewDocument; }
   set document(document: ReviewDocument | null) {
@@ -161,6 +162,7 @@ export class AppComponent implements OnInit, OnDestroy {
 
   selectVersion(version: string): void {
     this.clearStatusTimer();
+    this.routeAvailable = false;
     this.selectedVersion = version;
     this.fileSelection++;
     this.csvName = '';
@@ -189,6 +191,7 @@ export class AppComponent implements OnInit, OnDestroy {
     if (step === 'review' && this.selectedVersion === 'new') return;
     if (step === 'review' && this.loading) return;
     if (step === 'routes' && (!this.document?.readyForNextStep || this.loading || this.saving || this.searching)) return;
+    if (step !== 'routes') this.routeAvailable = false;
     this.step = step;
     if (step === 'review') {
       this.loadCheckStatus(this.selectedVersion, true);

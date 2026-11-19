@@ -1,23 +1,50 @@
 @baseUrl = http://routing-api.localtest.me
 @version = 20261117T1234561234567Z
 
-### Matrixplaceholder voor een bestaande planningsversie
+### Matrixberekening voor een bestaande planningsversie
 POST {{baseUrl}}/api/versions/{{version}}/matrix-calculation
 Content-Type: application/json
 
 {}
 
-### Matrixplaceholder voor een onbekende planningsversie
+### Matrixberekening voor een onbekende planningsversie
 POST {{baseUrl}}/api/versions/invalid/matrix-calculation
 Content-Type: application/json
 
 {}
 
-### Placeholder voor een bestaande planningsversie
+### Status van de routeberekening
+GET {{baseUrl}}/api/versions/{{version}}/route-calculation
+
+### Capaciteit per depotrit instellen
+PUT {{baseUrl}}/api/versions/{{version}}/settings/Capacity
+Content-Type: application/json
+
+{"value":"60"}
+
+### Herlaadtijd per tussentijds depotbezoek instellen
+PUT {{baseUrl}}/api/versions/{{version}}/settings/reloadSeconds
+Content-Type: application/json
+
+{"value":"10"}
+
+### Maximaal verschil in totale duur per chauffeur instellen (minuten)
+PUT {{baseUrl}}/api/versions/{{version}}/settings/maxDifferenceMinutes
+Content-Type: application/json
+
+{"value":"30"}
+
+### Weergeef de geometrie van de actuele routes
+GET {{baseUrl}}/api/versions/{{version}}/route-geometry
+
+### Start de routeberekening
 POST {{baseUrl}}/api/versions/{{version}}/route-calculation
 Content-Type: application/json
 
 {}
+
+### Actueel route-resultaat
+GET {{baseUrl}}/api/versions/{{version}}/routes
 
 ### Onbekende planningsversie
 POST {{baseUrl}}/api/versions/invalid/route-calculation

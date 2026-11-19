@@ -250,6 +250,32 @@ services:
       - ALL
     restart: unless-stopped
 
+  vroom-worker:
+    build:
+      context: .
+      dockerfile: containers/vroom-worker/Dockerfile
+    environment:
+      ROUTE_OUTPUT_DIR: /output
+      ROUTE_API_URL: http://routeplanner-api:8080/
+      ROUTE_VALHALLA_URL: http://valhalla:8002/
+    volumes:
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /output
+    expose:
+      - "8083"
+    networks:
+      - default
+      - route-planning
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
   routeplanner-api:
     build:
       context: .
@@ -274,9 +300,11 @@ services:
     depends_on:
       - address-check-broker
       - matrix-worker
+      - vroom-worker
     networks:
       - default
       - orchestration
+      - route-planning
     healthcheck:
       test: ["CMD", "dotnet", "RoutePlanner.Api.dll", "--health-check"]
       interval: 10s
@@ -300,4 +328,6 @@ volumes:
 
 networks:
   orchestration:
+    internal: true
+  route-planning:
     internal: true

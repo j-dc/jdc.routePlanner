@@ -1,6 +1,6 @@
 import { CommonModule } from '@angular/common';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { AfterViewInit, Component, ElementRef, Input, OnChanges, OnDestroy, ViewChild, inject } from '@angular/core';
+import { AfterViewInit, Component, ElementRef, Input, OnChanges, OnDestroy, SimpleChanges, ViewChild, inject } from '@angular/core';
 import Feature from 'ol/Feature';
 import Map from 'ol/Map';
 import View from 'ol/View';
@@ -22,6 +22,11 @@ const START_MARKER_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="44" hei
   <rect x="19" y="23.5" width="6" height="7.5" fill="#b04d25"/>
 </svg>`;
 
+const ROUTE_COLORS = [
+  '#7EB26D', '#EAB839', '#6ED0E0', '#EF843C', '#E24D42', '#1F78C1', '#BA43A9', '#705DA0',
+  '#508642', '#CCA300', '#447EBC', '#C15C17', '#890F02', '#0A437C', '#6D1F62', '#584477',
+];
+
 export interface MapLocation {
   recordNumber: number;
   address: string;
@@ -41,6 +46,8 @@ export interface MapLocation {
         <span class="location-count">{{ locations.length }} op kaart</span>
       </header>
       <p class="map-warning" *ngIf="missingCount" role="alert">{{ missingCount }} leveringen hebben geen bruikbare bevestigde coördinaten.</p>
+      <p class="map-warning" *ngIf="routeError" role="alert">{{ routeError }} <button type="button" (click)="loadRoutes()">Opnieuw proberen</button></p>
+      <p class="map-empty" *ngIf="routeLoading" role="status">Routes op de kaart laden…</p>
       <div class="geometry-notice" [class.missing-contours]="!geometryRunning && !geometryBusy && !geometryError && missingContours" *ngIf="geometryError || missingContours || geometryRunning || geometryBusy" role="status">
         <span *ngIf="geometryRunning">Lokale geometrie wordt gerendered...</span>
         <span *ngIf="!geometryRunning && geometryBusy">Er loopt al een andere verwerking.</span>
@@ -48,6 +55,10 @@ export interface MapLocation {
         <span *ngIf="!geometryRunning && !geometryBusy && !geometryError && missingContours">Voor {{ missingContours }} leveringen is geen lokale contour beschikbaar.</span>
         <button *ngIf="!geometryRunning && !geometryBusy" type="button" (click)="refreshGeometry()" [disabled]="geometryStarting">{{ geometryStarting ? 'Starten...' : 'Herbereken en laad de lokale geometrie' }}</button>
       </div>
+      <ul class="route-legend" *ngIf="routeLegend.length" aria-label="Routekleuren">
+        <li *ngFor="let route of routeLegend"><span class="route-swatch" [style.background-color]="route.color"></span>Chauffeur {{ route.driver }}</li>
+      </ul>
+      <p class="map-empty" *ngIf="routeLegend.length > 16">Vanaf chauffeur 17 worden kleuren herhaald.</p>
       <div class="map-body">
         <div class="map-container">
           <div #mapTarget class="map" tabindex="0" aria-label="Kaart met bevestigde leverlocaties"></div>
@@ -90,6 +101,9 @@ export interface MapLocation {
     .geometry-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--forest); border-radius: 5px; background: var(--forest); color: white; font-weight: 700; }
     .geometry-notice button:disabled { cursor: not-allowed; opacity: 0.55; }
     .map-empty { color: var(--muted); font-size: 13px; }
+    .route-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 0; list-style: none; font-size: 13px; }
+    .route-legend li { display: flex; align-items: center; gap: 6px; }
+    .route-swatch { display: inline-block; width: 20px; height: 5px; }
     @media (max-width: 680px) {
       .map-body { grid-template-columns: 1fr; }
       .map { height: 430px; }
@@ -102,6 +116,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   @Input() version = '';
   @Input() locations: MapLocation[] = [];
   @Input() missingCount = 0;
+  @Input() routeAvailable = false;
   @ViewChild('mapTarget') private mapTarget!: ElementRef<HTMLElement>;
 
   selectedLocations: MapLocation[] = [];
@@ -111,12 +126,18 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   geometryBusy = false;
   geometryStarting = false;
   missingContours = 0;
+  routeError = '';
+  routeLoading = false;
+  routeLegend: { driver: number; color: string }[] = [];
   private readonly source = new VectorSource<Feature<Point>>();
   private readonly clusterSource = new Cluster({ distance: 36, source: this.source });
   private readonly markerLayer = new VectorLayer({ source: this.source });
   private readonly clusterLayer = new VectorLayer({ source: this.clusterSource, visible: false });
   private readonly geometrySource = new VectorSource();
+  private readonly routeSource = new VectorSource();
   private readonly startSource = new VectorSource();
+  private routeSubscription: Subscription | null = null;
+  private routeDrivers = new globalThis.Map<number, number>();
   private geometrySubscription: Subscription | null = null;
   private statusSubscription: Subscription | null = null;
   private startSubscription: Subscription | null = null;
@@ -133,7 +154,9 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
         return new Style({
           image: new CircleStyle({
             radius: count > 1 ? 14 : 7,
-            fill: new Fill({ color: hasMissingContour ? '#82b4cd' : '#1b5945' }),
+            fill: new Fill({ color: count === 1 && this.routeDrivers.has(locations[0].get('location').recordNumber)
+              ? this.routeColor(this.routeDrivers.get(locations[0].get('location').recordNumber)!)
+              : hasMissingContour ? '#82b4cd' : '#1b5945' }),
             stroke: new Stroke({ color: '#ffffff', width: 2 }),
           }),
           text: count > 1 ? new Text({ text: String(count), fill: new Fill({ color: hasMissingContour ? '#173f55' : '#ffffff' }), font: '700 12px sans-serif' }) : undefined,
@@ -148,6 +171,9 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
           fill: new Fill({ color: 'rgba(230, 129, 58, 0.3)' }),
           stroke: new Stroke({ color: '#b04d25', width: 3 }),
         }),
+      }), new VectorLayer({
+        source: this.routeSource,
+        style: feature => new Style({ stroke: new Stroke({ color: this.routeColor(feature.get('driver') as number), width: 4 }) }),
       }), this.markerLayer, this.clusterLayer, new VectorLayer({
         source: this.startSource,
         zIndex: 10,
@@ -174,16 +200,24 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.updateLocations();
     this.loadGeometry();
     this.checkGeometryStatus(true);
+    if (this.routeAvailable) this.loadRoutes();
   }
 
-  ngOnChanges(): void {
+  ngOnChanges(changes: SimpleChanges): void {
     if (this.map) {
-      this.updateLocations();
-      this.updateGeometry();
+      if (changes['locations']) {
+        this.updateLocations();
+        this.updateGeometry();
+      }
+      if (changes['routeAvailable'] || changes['version']) {
+        this.clearRoutes();
+        if (this.routeAvailable) this.loadRoutes();
+      }
     }
   }
 
   ngOnDestroy(): void {
+    this.routeSubscription?.unsubscribe();
     this.geometrySubscription?.unsubscribe();
     this.statusSubscription?.unsubscribe();
     this.startSubscription?.unsubscribe();
@@ -198,6 +232,55 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.markerLayer.setVisible(!enabled);
     this.clusterLayer.setVisible(enabled);
     this.selectedLocations = [];
+  }
+
+  private routeColor(driver: number): string {
+    return ROUTE_COLORS[(driver - 1) % ROUTE_COLORS.length];
+  }
+
+  private clearRoutes(): void {
+    this.routeSubscription?.unsubscribe();
+    this.routeSource.clear();
+    this.routeDrivers.clear();
+    this.routeLegend = [];
+    this.routeError = '';
+    this.routeLoading = false;
+    this.source.changed();
+    this.clusterSource.changed();
+  }
+
+  loadRoutes(): void {
+    this.clearRoutes();
+    if (!this.routeAvailable) return;
+    this.routeLoading = true;
+    this.routeSubscription = this.http.get<object>(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/route-geometry`).subscribe({
+      next: data => {
+        try {
+          const features = new GeoJSON().readFeatures(data, { featureProjection: 'EPSG:3857' });
+          for (const feature of features) {
+            const driver = feature.get('driver') as number;
+            const records = feature.get('records') as unknown;
+            if (!Number.isSafeInteger(driver) || driver < 1 || !Array.isArray(records) ||
+                !records.every(record => Number.isSafeInteger(record)) || feature.getGeometry()?.getType() !== 'MultiLineString')
+              throw new Error('Invalid route geometry');
+            this.routeLegend.push({ driver, color: this.routeColor(driver) });
+            for (const record of records) this.routeDrivers.set(record, driver);
+          }
+          this.routeSource.addFeatures(features);
+          this.source.changed();
+          this.clusterSource.changed();
+        } catch {
+          this.clearRoutes();
+          this.routeError = 'De routegeometrie is ongeldig.';
+        }
+        this.routeLoading = false;
+      },
+      error: error => {
+        this.routeLoading = false;
+        const detail = error instanceof HttpErrorResponse ? error.error?.detail : null;
+        this.routeError = typeof detail === 'string' ? detail : 'De routes konden niet op de kaart worden geladen.';
+      },
+    });
   }
 
   private updateLocations(): void {

@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Globalization;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Mvc;
@@ -48,6 +49,7 @@ var photonApiBaseUrl = builder.Configuration["Review:PhotonApiBaseUrl"] ?? "http
 var brokerUrl = builder.Configuration["AddressCheck:BrokerUrl"] ?? "http://address-check-broker:8081/";
 var photonStatusUrl = builder.Configuration["AddressCheck:PhotonStatusUrl"] ?? "http://photon:2322/status";
 var matrixWorkerUrl = builder.Configuration["Matrix:WorkerUrl"] ?? "http://matrix-worker:8082/";
+var routeWorkerUrl = builder.Configuration["Route:WorkerUrl"] ?? "http://vroom-worker:8083/";
 builder.Services.AddSingleton(new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
 
 var app = builder.Build();
@@ -71,6 +73,115 @@ SettingsStore? GetSettingsStore(string version)
     return settingsStores.GetOrAdd(version, key => new SettingsStore(Path.Combine(
         Path.GetDirectoryName(Path.GetFullPath(reportPath))!,
         key == "legacy" ? "settings.json" : $"settings-{key}.json")));
+}
+
+bool MatrixMatches(JsonElement metadata, MatrixRequest input)
+{
+    var locations = metadata.GetProperty("locations").Deserialize<List<MatrixLocation>>(new JsonSerializerOptions(JsonSerializerDefaults.Web));
+    return metadata.GetProperty("version").GetString() == input.Version &&
+        metadata.GetProperty("reviewFingerprint").GetString() == input.ReviewFingerprint &&
+        metadata.GetProperty("reviewUpdatedAtUtc").GetDateTimeOffset() == input.ReviewUpdatedAtUtc &&
+        metadata.GetProperty("locationFingerprint").GetString() == MatrixWorker.LocationFingerprint(input.Locations) &&
+        locations is not null && locations.SequenceEqual(input.Locations);
+}
+
+int GetDriverCount(SettingsDocument settings, int deliveryCount)
+{
+    if (!settings.Settings.TryGetValue("nmbDrivers", out var value) ||
+        !int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var count) || count < 1)
+        throw new InvalidDataException("Vul bij de instellingen een geldig positief aantal chauffeurs in.");
+    if (count > deliveryCount)
+        throw new InvalidDataException("Er zijn meer chauffeurs dan leveringen.");
+    return count;
+}
+
+int GetServiceSeconds(SettingsDocument settings)
+{
+    if (!settings.Settings.TryGetValue("serviceSeconds", out var value)) return 60;
+    if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var seconds) || seconds < 1)
+        throw new InvalidDataException("Vul bij de instellingen een geldig positief geheel aantal seconden levertijd in.");
+    return seconds;
+}
+
+int GetNonNegativeSetting(SettingsDocument settings, string key, int defaultValue, bool allowZero)
+{
+    if (!settings.Settings.TryGetValue(key, out var value)) return defaultValue;
+    if (!int.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out var result) ||
+        result < (allowZero ? 0 : 1))
+        throw new InvalidDataException($"De instelling {key} moet een geldig {(allowZero ? "niet-negatief" : "positief")} geheel getal zijn.");
+    return result;
+}
+
+async Task<RouteCalculationInput> GetRouteInputAsync(string version, CancellationToken cancellationToken)
+{
+    var review = GetReviewStore(version) ?? throw new FileNotFoundException();
+    var settingsStore = GetSettingsStore(version) ?? throw new FileNotFoundException();
+    var settings = await settingsStore.GetAsync(cancellationToken);
+    if (settings.StartLocation is null) throw new InvalidDataException("Stel eerst een startlocatie in.");
+    var input = MatrixWorker.CreateRequest(version, await review.GetAsync(cancellationToken), settings);
+    var count = GetDriverCount(settings, input.Locations.Count - 1);
+    var serviceSeconds = GetServiceSeconds(settings);
+    var capacity = GetNonNegativeSetting(settings, "Capacity", 60, false);
+    var reloadSeconds = GetNonNegativeSetting(settings, "reloadSeconds", 10, true);
+    var maxDifferenceMinutes = GetNonNegativeSetting(settings, "maxDifferenceMinutes", 30, true);
+    var (inputHash, counts) = await InputCsvStore.ReadPackageCountsAsync(
+        InputCsvStore.InputPath(inputCsvPath, version), capacity, cancellationToken);
+    if (counts.Count != input.Locations.Count - 1 ||
+        input.Locations.Skip(1).Any(location => !counts.ContainsKey(location.CsvRecordNumber!.Value)))
+        throw new InvalidDataException("De pakketaantallen komen niet overeen met de bevestigde leveringen.");
+    var packageCounts = input.Locations.Skip(1).Select(location => counts[location.CsvRecordNumber!.Value]).ToArray();
+    var client = app.Services.GetRequiredService<HttpClient>();
+    using var response = await client.GetAsync(new Uri(new Uri(matrixWorkerUrl), $"status/{version}"), cancellationToken);
+    response.EnsureSuccessStatusCode();
+    var matrixStatus = await response.Content.ReadFromJsonAsync<MatrixStatus>(cancellationToken);
+    if (matrixStatus?.State != "completed")
+        throw new InvalidDataException("Een actuele, volledig berekende matrix is vereist.");
+    var path = MatrixWorker.MatrixPath(Path.GetDirectoryName(Path.GetFullPath(reportPath))!, version);
+    var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+    using var matrix = JsonDocument.Parse(bytes);
+    if (!MatrixMatches(matrix.RootElement.GetProperty("metadata"), input))
+        throw new InvalidDataException("De matrix is verouderd; bereken deze opnieuw.");
+    return new RouteCalculationInput(version, Convert.ToHexString(SHA256.HashData(bytes)), inputHash,
+        count, serviceSeconds, capacity, reloadSeconds, maxDifferenceMinutes, packageCounts);
+}
+
+async Task<MatrixStatus> GetRouteStatusAsync(string version, HttpClient client, CancellationToken cancellationToken)
+{
+    using var response = await client.GetAsync(new Uri(new Uri(routeWorkerUrl), $"status/{version}"), cancellationToken);
+    response.EnsureSuccessStatusCode();
+    var status = await response.Content.ReadFromJsonAsync<MatrixStatus>(cancellationToken)
+        ?? throw new JsonException("De routestatus is leeg.");
+    if (status.State != "completed") return status;
+    try
+    {
+        var input = await GetRouteInputAsync(version, cancellationToken);
+        var path = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(reportPath))!,
+            version == "legacy" ? "routes.json" : $"routes-{version}.json");
+        await using var stream = File.OpenRead(path);
+        using var routes = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var metadata = routes.RootElement.GetProperty("metadata");
+        if (!metadata.TryGetProperty("serviceTimeModel", out var serviceModel) ||
+            serviceModel.GetString() != "per-location-visit-v1" ||
+            !metadata.TryGetProperty("serviceSecondsPerVisit", out var serviceSeconds) ||
+            serviceSeconds.GetInt32() != input.ServiceSeconds)
+            return new MatrixStatus("stale", "De levertijd is gewijzigd; bereken de routes opnieuw.");
+        if (!metadata.TryGetProperty("optimization", out var optimization) ||
+            optimization.GetString() != "vroom-capacity-multitrip-v1")
+            return new MatrixStatus("stale", "De routeoptimalisatie is gewijzigd; bereken de routes opnieuw.");
+        if (metadata.GetProperty("version").GetString() != version ||
+            metadata.GetProperty("matrixSha256").GetString() != input.MatrixSha256 ||
+            metadata.GetProperty("inputSha256").GetString() != input.InputSha256 ||
+            metadata.GetProperty("driverCount").GetInt32() != input.DriverCount ||
+            metadata.GetProperty("capacity").GetInt32() != input.Capacity ||
+            metadata.GetProperty("reloadSeconds").GetInt32() != input.ReloadSeconds ||
+            metadata.GetProperty("maxAllowedDifferenceSeconds").GetInt64() != (long)input.MaxDifferenceMinutes * 60)
+            return new MatrixStatus("stale", "De invoer, matrix of instellingen zijn gewijzigd; bereken de routes opnieuw.");
+        return status;
+    }
+    catch (Exception exception) when (exception is FileNotFoundException or InvalidDataException or ArgumentException or JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+    {
+        return new MatrixStatus("stale", "De routes zijn niet meer geldig; controleer de matrix en instellingen.");
+    }
 }
 
 IResult SettingsFailure(Exception exception) => exception switch
@@ -191,9 +302,7 @@ app.MapGet("/api/versions/{version}/matrix-calculation", async (string version, 
                 await using var stream = File.OpenRead(matrixPath);
                 using var matrix = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
                 var metadata = matrix.RootElement.GetProperty("metadata");
-                if (metadata.GetProperty("reviewFingerprint").GetString() != input.ReviewFingerprint ||
-                    metadata.GetProperty("reviewUpdatedAtUtc").GetDateTimeOffset() != input.ReviewUpdatedAtUtc ||
-                    metadata.GetProperty("locationFingerprint").GetString() != MatrixWorker.LocationFingerprint(input.Locations))
+                if (!MatrixMatches(metadata, input))
                     status = new MatrixStatus("stale", "De review of startlocatie is gewijzigd; bereken de matrix opnieuw.");
             }
             catch (Exception exception) when (exception is FileNotFoundException or InvalidDataException or ArgumentException or JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
@@ -260,16 +369,105 @@ app.MapPost("/api/versions/{version}/matrix-calculation", async (string version,
 .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
 .Produces(StatusCodes.Status404NotFound);
 
-app.MapPost("/api/versions/{version}/route-calculation", (string version) =>
+app.MapGet("/api/versions/{version}/route-calculation", async (string version, HttpClient client, CancellationToken cancellationToken) =>
 {
     if (!InputCsvStore.IsVersion(version) || !File.Exists(InputCsvStore.InputPath(inputCsvPath, version)))
         return Results.NotFound();
-    return Results.Problem("Routeberekening is nog niet beschikbaar.", statusCode: StatusCodes.Status501NotImplemented);
+    try { return Results.Ok(await GetRouteStatusAsync(version, client, cancellationToken)); }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or IOException or UnauthorizedAccessException)
+    {
+        return Results.Problem("De routestatus is niet beschikbaar.", statusCode: 503);
+    }
+})
+.WithName("GetRouteStatus")
+.WithSummary("Bekijk de status van de routeberekening")
+.Produces<MatrixStatus>()
+.ProducesProblem(StatusCodes.Status503ServiceUnavailable)
+.Produces(StatusCodes.Status404NotFound);
+
+app.MapPost("/api/versions/{version}/route-calculation", async (string version, HttpRequest request, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetReviewStore(version) is null || GetSettingsStore(version) is null) return Results.NotFound();
+    if (!request.HasJsonContentType() || (request.Headers.Origin.Count > 0 && request.Headers.Origin.ToString() != "http://routing.localtest.me"))
+        return Results.Problem("Invalid request origin or content type.", statusCode: 403);
+    try
+    {
+        var input = await GetRouteInputAsync(version, cancellationToken);
+        using var response = await client.PostAsJsonAsync(new Uri(new Uri(routeWorkerUrl), "start"),
+            input, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            return Results.Conflict(new { detail = "Er loopt al een routeberekening." });
+        if (!response.IsSuccessStatusCode)
+            return Results.Problem("De routeworker is niet beschikbaar.", statusCode: 503);
+        return Results.Accepted($"/api/versions/{version}/route-calculation", new MatrixStatus("running"));
+    }
+    catch (FileNotFoundException) { return Results.Problem("De matrix of review ontbreekt.", statusCode: 409); }
+    catch (InvalidDataException exception) { return Results.Problem(exception.Message, statusCode: 409); }
+    catch (Exception exception) when (exception is ArgumentException or JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+    {
+        return Results.Problem("De matrix of instellingen zijn ongeldig; controleer de invoer.", statusCode: 409);
+    }
+    catch (Exception exception) when (exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException)
+    {
+        return Results.Problem("De routeberekening of matrixstatus is niet beschikbaar.", statusCode: 503);
+    }
 })
 .WithName("CalculateRoute")
 .WithSummary("Start routeberekening voor een planningsversie")
-.WithDescription("Placeholder: routeberekening is nog niet geïmplementeerd.")
-.ProducesProblem(StatusCodes.Status501NotImplemented)
+.WithDescription("Verdeel leveringen met VROOM over de geselecteerde chauffeurs.")
+.Produces<MatrixStatus>(StatusCodes.Status202Accepted)
+.ProducesProblem(StatusCodes.Status409Conflict)
+.ProducesProblem(StatusCodes.Status503ServiceUnavailable)
+.Produces(StatusCodes.Status404NotFound);
+
+app.MapGet("/api/versions/{version}/routes", async (string version, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetReviewStore(version) is null) return Results.NotFound();
+    try
+    {
+        var status = await GetRouteStatusAsync(version, client, cancellationToken);
+        if (status.State != "completed") return Results.Problem("Er is geen actuele voltooide routeberekening.", statusCode: 409);
+        var path = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(reportPath))!,
+            version == "legacy" ? "routes.json" : $"routes-{version}.json");
+        return Results.File(await File.ReadAllBytesAsync(path, cancellationToken), "application/json");
+    }
+    catch (Exception exception) when (exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException or JsonException)
+    {
+        return Results.Problem("De routes zijn niet beschikbaar.", statusCode: 503);
+    }
+})
+.WithName("GetRoutes")
+.WithSummary("Haal de actuele berekende routes op")
+.Produces(StatusCodes.Status200OK, contentType: "application/json")
+.ProducesProblem(StatusCodes.Status409Conflict)
+.Produces(StatusCodes.Status404NotFound);
+
+app.MapGet("/api/versions/{version}/route-geometry", async (string version, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetReviewStore(version) is null) return Results.NotFound();
+    try
+    {
+        if ((await GetRouteStatusAsync(version, client, cancellationToken)).State != "completed")
+            return Results.Problem("Er is geen actuele voltooide routeberekening.", statusCode: 409);
+        using var geometryClient = new HttpClient { Timeout = TimeSpan.FromMinutes(10) };
+        using var response = await geometryClient.GetAsync(new Uri(new Uri(routeWorkerUrl), $"geometry/{version}"), cancellationToken);
+        if (!response.IsSuccessStatusCode)
+            return Results.Problem("De routegeometrie is niet beschikbaar. Controleer Valhalla en probeer opnieuw.", statusCode: 503);
+        var geometry = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+        if ((await GetRouteStatusAsync(version, client, cancellationToken)).State != "completed")
+            return Results.Problem("De routeberekening is gewijzigd tijdens het ophalen van de geometrie.", statusCode: 409);
+        return Results.File(geometry, "application/geo+json");
+    }
+    catch (Exception exception) when (exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException or JsonException)
+    {
+        return Results.Problem("De routegeometrie is niet beschikbaar. Controleer Valhalla en probeer opnieuw.", statusCode: 503);
+    }
+})
+.WithName("GetRouteGeometry")
+.WithSummary("Haal de Valhalla-geometrie van actuele routes op")
+.Produces(StatusCodes.Status200OK, contentType: "application/geo+json")
+.ProducesProblem(StatusCodes.Status409Conflict)
+.ProducesProblem(StatusCodes.Status503ServiceUnavailable)
 .Produces(StatusCodes.Status404NotFound);
 
 app.MapGet("/api/versions/{version}/address-check", async (string version, HttpClient client, CancellationToken cancellationToken) =>

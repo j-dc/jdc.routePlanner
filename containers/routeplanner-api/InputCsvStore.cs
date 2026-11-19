@@ -1,6 +1,7 @@
 using System.Text;
 using System.Globalization;
 using System.Text.RegularExpressions;
+using System.Security.Cryptography;
 using Microsoft.VisualBasic.FileIO;
 
 namespace RoutePlanner.Api;
@@ -35,6 +36,46 @@ public static class InputCsvStore
             .ToList();
         if (File.Exists(inputPath)) versions.Add("legacy");
         return versions.ToArray();
+    }
+
+    public static async Task<(string Hash, Dictionary<int, int> Counts)> ReadPackageCountsAsync(
+        string path, int capacity, CancellationToken cancellationToken)
+    {
+        var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
+        string csv;
+        try { csv = new UTF8Encoding(false, true).GetString(bytes).TrimStart('\uFEFF'); }
+        catch (DecoderFallbackException) { throw new InvalidDataException("De invoer-CSV moet UTF-8 gebruiken."); }
+        using var parser = new TextFieldParser(new StringReader(csv))
+        {
+            TextFieldType = FieldType.Delimited,
+            HasFieldsEnclosedInQuotes = true,
+            TrimWhiteSpace = false
+        };
+        parser.SetDelimiters(";");
+        try
+        {
+            if (parser.EndOfData || !ExpectedHeaders.SequenceEqual(parser.ReadFields() ?? []))
+                throw new InvalidDataException("De invoer-CSV heeft een ongeldige kolomindeling.");
+            var counts = new Dictionary<int, int>();
+            var recordNumber = 1;
+            while (!parser.EndOfData)
+            {
+                var fields = parser.ReadFields();
+                recordNumber++;
+                if (fields is null || fields.Length != ExpectedHeaders.Length ||
+                    !int.TryParse(fields[6].Trim(), NumberStyles.None, CultureInfo.InvariantCulture, out var count) || count < 1)
+                    throw new InvalidDataException($"CSV-record {recordNumber} heeft geen geldig positief aantal pakketten.");
+                if (count > capacity)
+                    throw new InvalidDataException($"CSV-record {recordNumber} bevat meer pakketten dan de capaciteit.");
+                counts.Add(recordNumber, count);
+            }
+            if (counts.Count == 0) throw new InvalidDataException("De invoer-CSV bevat geen leveringen.");
+            return (Convert.ToHexString(SHA256.HashData(bytes)), counts);
+        }
+        catch (MalformedLineException)
+        {
+            throw new InvalidDataException("De invoer-CSV bevat een ongeldig record.");
+        }
     }
 
     public static async Task<string> SaveAsync(Stream input, string inputPath, CancellationToken cancellationToken)
