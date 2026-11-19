@@ -70,6 +70,8 @@ const server = createServer(async (request, response) => {
           !Number.isInteger(input.maxDifferenceMinutes) || input.maxDifferenceMinutes < 0 || input.maxDifferenceMinutes > 2147483647 ||
           !Array.isArray(input.packageCounts) || input.packageCounts.length < input.driverCount ||
           input.packageCounts.some(count => !Number.isInteger(count) || count < 1 || count > input.capacity) ||
+          !Array.isArray(input.routeLabels) || input.routeLabels.length !== input.packageCounts.length ||
+          input.routeLabels.some(label => typeof label !== 'string' || label !== label.trim()) ||
           !/^[A-F0-9]{64}$/.test(input.inputSha256) || !/^[A-F0-9]{64}$/.test(input.matrixSha256))
         return reply(response, 400, { detail: 'Ongeldige invoer voor de routeberekening.' });
       if (runningVersion) return reply(response, 409, { detail: 'Er loopt al een routeberekening.' });

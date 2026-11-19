@@ -3,7 +3,7 @@ using System.Text.Json;
 
 namespace RoutePlanner.Api;
 
-/// <summary>Matrix index linked to a delivery record, or to the optional start location.</summary>
+/// <summary>Matrix index linked to a delivery record, or to the start location.</summary>
 public sealed record MatrixLocation(int? CsvRecordNumber, double Latitude, double Longitude);
 
 /// <summary>Validated snapshot used to calculate a matrix.</summary>
@@ -87,7 +87,8 @@ public static class MatrixWorker
     private static bool IsValid(MatrixRequest request)
     {
         if (string.IsNullOrWhiteSpace(request.Version) || !InputCsvStore.IsVersion(request.Version) || string.IsNullOrWhiteSpace(request.ReviewFingerprint) ||
-            request.Locations is null || request.Locations.Count == 0) return false;
+            request.Locations is null || request.Locations.Count < 2 ||
+            request.Locations[0] is null || request.Locations[0].CsvRecordNumber is not null) return false;
         var records = new HashSet<int>();
         var startCount = 0;
         foreach (var location in request.Locations)
@@ -97,19 +98,17 @@ public static class MatrixWorker
             if (location.CsvRecordNumber is null) { if (++startCount > 1) return false; }
             else if (location.CsvRecordNumber < 2 || !records.Add(location.CsvRecordNumber.Value)) return false;
         }
-        return records.Count > 0;
+        return startCount == 1 && records.Count > 0;
     }
 
     public static MatrixRequest CreateRequest(string version, ReviewDocument review, SettingsDocument settings)
     {
         if (!review.ReadyForNextStep || review.Records.Count != review.TotalRecords)
             throw new InvalidDataException("Alle leveringen moeten bevestigd zijn voordat de matrix kan worden berekend.");
-        var locations = new List<MatrixLocation>();
-        if (settings.StartLocation is { } start)
-        {
-            SettingsStore.ValidateStartLocation(start);
-            locations.Add(new MatrixLocation(null, start.Latitude, start.Longitude));
-        }
+        var start = settings.StartLocation ??
+            throw new InvalidDataException("Stel eerst een startlocatie in voordat de matrix kan worden berekend.");
+        SettingsStore.ValidateStartLocation(start);
+        var locations = new List<MatrixLocation> { new(null, start.Latitude, start.Longitude) };
         foreach (var record in review.Records.OrderBy(record => record.CsvRecordNumber))
         {
             if (record.Decision is not (ReviewDecision.Accepted or ReviewDecision.AutoAccepted) ||

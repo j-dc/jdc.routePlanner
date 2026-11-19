@@ -50,6 +50,7 @@ var brokerUrl = builder.Configuration["AddressCheck:BrokerUrl"] ?? "http://addre
 var photonStatusUrl = builder.Configuration["AddressCheck:PhotonStatusUrl"] ?? "http://photon:2322/status";
 var matrixWorkerUrl = builder.Configuration["Matrix:WorkerUrl"] ?? "http://matrix-worker:8082/";
 var routeWorkerUrl = builder.Configuration["Route:WorkerUrl"] ?? "http://vroom-worker:8083/";
+var pdfWorkerUrl = builder.Configuration["DriverPdf:WorkerUrl"] ?? "http://driver-pdf:8084/";
 builder.Services.AddSingleton(new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
 
 var app = builder.Build();
@@ -124,12 +125,13 @@ async Task<RouteCalculationInput> GetRouteInputAsync(string version, Cancellatio
     var capacity = GetNonNegativeSetting(settings, "Capacity", 60, false);
     var reloadSeconds = GetNonNegativeSetting(settings, "reloadSeconds", 10, true);
     var maxDifferenceMinutes = GetNonNegativeSetting(settings, "maxDifferenceMinutes", 30, true);
-    var (inputHash, counts) = await InputCsvStore.ReadPackageCountsAsync(
+    var (inputHash, counts, routeLabels) = await InputCsvStore.ReadPackageCountsAsync(
         InputCsvStore.InputPath(inputCsvPath, version), capacity, cancellationToken);
     if (counts.Count != input.Locations.Count - 1 ||
         input.Locations.Skip(1).Any(location => !counts.ContainsKey(location.CsvRecordNumber!.Value)))
         throw new InvalidDataException("De pakketaantallen komen niet overeen met de bevestigde leveringen.");
     var packageCounts = input.Locations.Skip(1).Select(location => counts[location.CsvRecordNumber!.Value]).ToArray();
+    var labels = input.Locations.Skip(1).Select(location => routeLabels[location.CsvRecordNumber!.Value]).ToArray();
     var client = app.Services.GetRequiredService<HttpClient>();
     using var response = await client.GetAsync(new Uri(new Uri(matrixWorkerUrl), $"status/{version}"), cancellationToken);
     response.EnsureSuccessStatusCode();
@@ -142,7 +144,7 @@ async Task<RouteCalculationInput> GetRouteInputAsync(string version, Cancellatio
     if (!MatrixMatches(matrix.RootElement.GetProperty("metadata"), input))
         throw new InvalidDataException("De matrix is verouderd; bereken deze opnieuw.");
     return new RouteCalculationInput(version, Convert.ToHexString(SHA256.HashData(bytes)), inputHash,
-        count, serviceSeconds, capacity, reloadSeconds, maxDifferenceMinutes, packageCounts);
+        count, serviceSeconds, capacity, reloadSeconds, maxDifferenceMinutes, packageCounts, labels);
 }
 
 async Task<MatrixStatus> GetRouteStatusAsync(string version, HttpClient client, CancellationToken cancellationToken)
@@ -168,6 +170,10 @@ async Task<MatrixStatus> GetRouteStatusAsync(string version, HttpClient client, 
         if (!metadata.TryGetProperty("optimization", out var optimization) ||
             optimization.GetString() != "vroom-capacity-multitrip-v1")
             return new MatrixStatus("stale", "De routeoptimalisatie is gewijzigd; bereken de routes opnieuw.");
+        if (input.RouteLabels.Any(label => label.Length > 0) &&
+            (!routes.RootElement.TryGetProperty("oldRoutePlan", out var oldRoutePlan) ||
+             oldRoutePlan.ValueKind != JsonValueKind.Object))
+            return new MatrixStatus("stale", "De oude route-indeling ontbreekt; bereken de routes opnieuw.");
         if (metadata.GetProperty("version").GetString() != version ||
             metadata.GetProperty("matrixSha256").GetString() != input.MatrixSha256 ||
             metadata.GetProperty("inputSha256").GetString() != input.InputSha256 ||
@@ -182,6 +188,24 @@ async Task<MatrixStatus> GetRouteStatusAsync(string version, HttpClient client, 
     {
         return new MatrixStatus("stale", "De routes zijn niet meer geldig; controleer de matrix en instellingen.");
     }
+}
+
+async Task<JsonElement> ReadOsmGeometryAsync(string version, CancellationToken cancellationToken)
+{
+    var directory = Path.GetDirectoryName(Path.GetFullPath(reportPath))!;
+    var selectedReport = version == "legacy" ? reportPath : Path.Combine(directory, $"address-check-{version}.json");
+    var geometryPath = Path.Combine(directory, version == "legacy" ? "osm-geometry.geojson" : $"osm-geometry-{version}.geojson");
+    var reportBytes = await File.ReadAllBytesAsync(selectedReport, cancellationToken);
+    using var geometry = JsonDocument.Parse(await File.ReadAllBytesAsync(geometryPath, cancellationToken));
+    var root = geometry.RootElement;
+    if (root.ValueKind != JsonValueKind.Object ||
+        !root.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String || type.GetString() != "FeatureCollection" ||
+        !root.TryGetProperty("features", out var features) || features.ValueKind != JsonValueKind.Array ||
+        !root.TryGetProperty("metadata", out var metadata) || metadata.ValueKind != JsonValueKind.Object ||
+        !metadata.TryGetProperty("sourceReportSha256", out var sourceHash) || sourceHash.ValueKind != JsonValueKind.String ||
+        !string.Equals(sourceHash.GetString(), Convert.ToHexString(SHA256.HashData(reportBytes)), StringComparison.OrdinalIgnoreCase))
+        throw new InvalidDataException("De OSM-geometrie past niet bij het huidige geocodingrapport.");
+    return root.Clone();
 }
 
 IResult SettingsFailure(Exception exception) => exception switch
@@ -420,6 +444,99 @@ app.MapPost("/api/versions/{version}/route-calculation", async (string version, 
 .ProducesProblem(StatusCodes.Status503ServiceUnavailable)
 .Produces(StatusCodes.Status404NotFound);
 
+app.MapGet("/api/versions/{version}/driver-pdf-data", async (string version, HttpClient client, CancellationToken cancellationToken) =>
+{
+    var store = GetReviewStore(version);
+    if (store is null) return Results.NotFound();
+    try
+    {
+        if ((await GetRouteStatusAsync(version, client, cancellationToken)).State != "completed")
+            return Results.Problem("Er is geen actuele voltooide routeberekening.", statusCode: 409);
+        var input = await GetRouteInputAsync(version, cancellationToken);
+        var directory = Path.GetDirectoryName(Path.GetFullPath(reportPath))!;
+        var routePath = Path.Combine(directory, version == "legacy" ? "routes.json" : $"routes-{version}.json");
+        var routeBytes = await File.ReadAllBytesAsync(routePath, cancellationToken);
+        var matrixPath = MatrixWorker.MatrixPath(directory, version);
+        var matrixBytes = await File.ReadAllBytesAsync(matrixPath, cancellationToken);
+        var (inputHash, rows, _) = await InputCsvStore.ReadDeliveriesAsync(
+            InputCsvStore.InputPath(inputCsvPath, version), input.Capacity, cancellationToken);
+        if (inputHash != input.InputSha256 || Convert.ToHexString(SHA256.HashData(matrixBytes)) != input.MatrixSha256)
+            return Results.Problem("De invoer of matrix is gewijzigd.", statusCode: 409);
+        using var routes = JsonDocument.Parse(routeBytes);
+        using var matrix = JsonDocument.Parse(matrixBytes);
+        var deliveries = rows.Select(row => new
+        {
+            row.CsvRecordNumber, row.Name, row.Street, row.HouseNumber, row.Postcode, row.Municipality,
+            row.PackageCount, row.Bellen, row.RemarkUpper, row.RemarkLower
+        }).ToArray();
+        var currentRouteBytes = await File.ReadAllBytesAsync(routePath, cancellationToken);
+        if ((await GetRouteStatusAsync(version, client, cancellationToken)).State != "completed" ||
+            !routeBytes.AsSpan().SequenceEqual(currentRouteBytes))
+            return Results.Problem("De routeberekening is gewijzigd.", statusCode: 409);
+        return Results.Ok(new
+        {
+            Version = version,
+            Routes = routes.RootElement.GetProperty("routes").Clone(),
+            Locations = matrix.RootElement.GetProperty("metadata").GetProperty("locations").Clone(),
+            Deliveries = deliveries
+        });
+    }
+    catch (InvalidDataException exception) { return Results.Problem(exception.Message, statusCode: 409); }
+    catch (FileNotFoundException) { return Results.Problem("De routegegevens ontbreken.", statusCode: 409); }
+    catch (Exception exception) when (exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException or JsonException or InvalidOperationException or KeyNotFoundException or ArgumentException)
+    {
+        return Results.Problem("De PDF-invoer is niet beschikbaar of ongeldig.", statusCode: 503);
+    }
+})
+.WithName("GetDriverPdfData")
+.WithSummary("Haal de actuele gegevens voor chauffeur-PDF's op");
+
+app.MapGet("/api/versions/{version}/driver-pdfs", async (string version, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetReviewStore(version) is null) return Results.NotFound();
+    try
+    {
+        using var response = await client.GetAsync(new Uri(new Uri(pdfWorkerUrl), $"status/{version}"), cancellationToken);
+        if (!response.IsSuccessStatusCode) return Results.Problem("De PDF-status is niet beschikbaar.", statusCode: 503);
+        return Results.Content(await response.Content.ReadAsStringAsync(cancellationToken), "application/json");
+    }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+    {
+        return Results.Problem("De PDF-status is niet beschikbaar.", statusCode: 503);
+    }
+})
+.WithName("GetDriverPdfStatus")
+.WithSummary("Bekijk de status van chauffeur-PDF's");
+
+app.MapPost("/api/versions/{version}/driver-pdfs", async (string version, HttpRequest request, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetReviewStore(version) is null) return Results.NotFound();
+    if (!request.HasJsonContentType() || (request.Headers.Origin.Count > 0 && request.Headers.Origin.ToString() != "http://routing.localtest.me"))
+        return Results.Problem("Invalid request origin or content type.", statusCode: 403);
+    try
+    {
+        if ((await GetRouteStatusAsync(version, client, cancellationToken)).State != "completed")
+            return Results.Problem("Er is geen actuele voltooide routeberekening.", statusCode: 409);
+        using var content = new StringContent(JsonSerializer.Serialize(new { version }), System.Text.Encoding.UTF8, "application/json");
+        using var response = await client.PostAsync(new Uri(new Uri(pdfWorkerUrl), "start"), content, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            return Results.Conflict(new { detail = "Er loopt al een PDF-generatie." });
+        if (!response.IsSuccessStatusCode)
+        {
+            app.Logger.LogWarning("De PDF-worker weigerde de aanvraag met HTTP-status {StatusCode}.", (int)response.StatusCode);
+            return Results.Problem("De PDF-generatie is niet beschikbaar. Controleer de API- en PDF-workerlogs.", statusCode: 503);
+        }
+        return Results.Accepted($"/api/versions/{version}/driver-pdfs", new MatrixStatus("running"));
+    }
+    catch (Exception exception) when (exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException or JsonException)
+    {
+        app.Logger.LogWarning("De PDF-generatie kon niet worden gestart ({ErrorType}).", exception.GetType().Name);
+        return Results.Problem("De PDF-generatie is niet beschikbaar. Controleer de API- en PDF-workerlogs.", statusCode: 503);
+    }
+})
+.WithName("CreateDriverPdfs")
+.WithSummary("Start het maken van chauffeur-PDF's");
+
 app.MapGet("/api/versions/{version}/routes", async (string version, HttpClient client, CancellationToken cancellationToken) =>
 {
     if (GetReviewStore(version) is null) return Results.NotFound();
@@ -561,26 +678,10 @@ app.MapGet("/api/versions/{version}/osm-geometry", async (string version, Cancel
 {
     var store = GetReviewStore(version);
     if (store is null) return Results.NotFound();
-    var directory = Path.GetDirectoryName(Path.GetFullPath(reportPath))!;
-    var selectedReport = version == "legacy" ? reportPath : Path.Combine(directory, $"address-check-{version}.json");
-    var geometryPath = Path.Combine(directory, version == "legacy" ? "osm-geometry.geojson" : $"osm-geometry-{version}.geojson");
     try
     {
         await store.GetAsync(cancellationToken);
-        var reportBytes = await File.ReadAllBytesAsync(selectedReport, cancellationToken);
-        var geometryBytes = await File.ReadAllBytesAsync(geometryPath, cancellationToken);
-        using var geometry = JsonDocument.Parse(geometryBytes);
-        var root = geometry.RootElement;
-        if (root.ValueKind != JsonValueKind.Object ||
-            !root.TryGetProperty("type", out var type) || type.ValueKind != JsonValueKind.String || type.GetString() != "FeatureCollection" ||
-            !root.TryGetProperty("features", out var features) || features.ValueKind != JsonValueKind.Array ||
-            !root.TryGetProperty("metadata", out var metadata) || metadata.ValueKind != JsonValueKind.Object ||
-            !metadata.TryGetProperty("sourceReportSha256", out var sourceHash) || sourceHash.ValueKind != JsonValueKind.String ||
-            !string.Equals(sourceHash.GetString(), Convert.ToHexString(SHA256.HashData(reportBytes)), StringComparison.OrdinalIgnoreCase))
-        {
-            return Results.Problem("De OSM-geometrie past niet bij het huidige geocodingrapport.", statusCode: 409);
-        }
-        return Results.File(geometryBytes, "application/geo+json");
+        return Results.Content((await ReadOsmGeometryAsync(version, cancellationToken)).GetRawText(), "application/geo+json");
     }
     catch (FileNotFoundException)
     {

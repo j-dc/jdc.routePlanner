@@ -2,13 +2,13 @@ import { createHash } from 'node:crypto';
 import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
-import { balanceRoutes, completeRoutes, routeCost, serviceTime, splitTrips } from './balance.mjs';
+import { balanceRoutes, completeRoutes, createOldGroups, routeCost, serviceTime, splitTrips } from './balance.mjs';
 
 let requestBody = '';
 for await (const chunk of process.stdin) requestBody += chunk;
 const request = JSON.parse(requestBody);
 const { version, driverCount, matrixSha256: expectedHash, inputSha256, capacity, reloadSeconds,
-  maxDifferenceMinutes, serviceSeconds: serviceSecondsPerVisit, packageCounts: deliveryCounts } = request;
+  maxDifferenceMinutes, serviceSeconds: serviceSecondsPerVisit, packageCounts: deliveryCounts, routeLabels } = request;
 const maxDifferenceSeconds = maxDifferenceMinutes * 60;
 const outputDirectory = process.env.ROUTE_OUTPUT_DIR || '/output';
 const apiUrl = process.env.ROUTE_API_URL || 'http://routeplanner-api:8080/';
@@ -60,45 +60,49 @@ async function calculate() {
       locationIds[index] = representative;
     }
   }
-  let remaining = locations.slice(1).map((_, index) => index + 1);
-  let trips = [];
-  while (remaining.length) {
-    const problem = {
-      matrices: { car },
-      jobs: remaining.map(index => ({
-        id: index, location_index: locationIds[index], setup: serviceSecondsPerVisit,
-        delivery: [packageCounts[index]]
-      })),
-      vehicles: Array.from({ length: driverCount }, (_, index) => ({
-        id: index + 1, profile: 'car', start_index: 0, end_index: 0, capacity: [capacity]
-      }))
-    };
-    const solver = spawnSync('vroom', ['-t', '2', '-x', '4'], {
-      input: JSON.stringify(problem), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 300000
-    });
-    if (solver.error || solver.status !== 0) fail('VROOM kon de routes niet berekenen.');
-    const solution = JSON.parse(solver.stdout);
-    if (solution.code !== 0 || !Array.isArray(solution.routes) || !Array.isArray(solution.unassigned) ||
-        solution.routes.length > driverCount)
-      fail('VROOM kon niet alle leveringen toewijzen.');
-    const wave = solution.routes.map(route => {
-      if (!Array.isArray(route.steps)) fail('VROOM gaf een ongeldige route terug.');
-      return route.steps.filter(step => step.type === 'job').map(step => step.id);
-    });
-    const assigned = wave.flat();
-    const unassigned = solution.unassigned.map(item => item.id);
-    const expected = new Set(remaining);
-    const all = [...assigned, ...unassigned];
-    if (wave.some(trip => trip.length === 0 || trip.reduce((sum, index) => sum + packageCounts[index], 0) > capacity) ||
-        assigned.length === 0 || all.length !== remaining.length || new Set(all).size !== remaining.length ||
-        all.some(index => !Number.isInteger(index) || !expected.has(index)))
-      fail('VROOM gaf een onvolledige of ongeldige toewijzing terug.');
-    if (wave.some((trip, index) => solution.routes[index].duration !== routeCost(trip, car.durations) ||
-        solution.routes[index].setup !== serviceTime(trip, locationIds, serviceSecondsPerVisit)))
-      fail('VROOM gaf ongeldige reistijd of levertijd terug; controleer de matrix en de ingestelde levertijd.');
-    trips.push(...wave);
-    remaining = unassigned;
+  function solveTrips(indices, vehicleCount) {
+    let remaining = indices;
+    const trips = [];
+    while (remaining.length) {
+      const problem = {
+        matrices: { car },
+        jobs: remaining.map(index => ({
+          id: index, location_index: locationIds[index], setup: serviceSecondsPerVisit,
+          delivery: [packageCounts[index]]
+        })),
+        vehicles: Array.from({ length: vehicleCount }, (_, index) => ({
+          id: index + 1, profile: 'car', start_index: 0, end_index: 0, capacity: [capacity]
+        }))
+      };
+      const solver = spawnSync('vroom', ['-t', '2', '-x', '4'], {
+        input: JSON.stringify(problem), encoding: 'utf8', maxBuffer: 32 * 1024 * 1024, timeout: 300000
+      });
+      if (solver.error || solver.status !== 0) fail('VROOM kon de routes niet berekenen.');
+      const solution = JSON.parse(solver.stdout);
+      if (solution.code !== 0 || !Array.isArray(solution.routes) || !Array.isArray(solution.unassigned) ||
+          solution.routes.length > vehicleCount)
+        fail('VROOM kon niet alle leveringen toewijzen.');
+      const wave = solution.routes.map(route => {
+        if (!Array.isArray(route.steps)) fail('VROOM gaf een ongeldige route terug.');
+        return route.steps.filter(step => step.type === 'job').map(step => step.id);
+      });
+      const assigned = wave.flat();
+      const unassigned = solution.unassigned.map(item => item.id);
+      const expected = new Set(remaining);
+      const all = [...assigned, ...unassigned];
+      if (wave.some(trip => trip.length === 0 || trip.reduce((sum, index) => sum + packageCounts[index], 0) > capacity) ||
+          assigned.length === 0 || all.length !== remaining.length || new Set(all).size !== remaining.length ||
+          all.some(index => !Number.isInteger(index) || !expected.has(index)))
+        fail('VROOM gaf een onvolledige of ongeldige toewijzing terug.');
+      if (wave.some((trip, index) => solution.routes[index].duration !== routeCost(trip, car.durations) ||
+          solution.routes[index].setup !== serviceTime(trip, locationIds, serviceSecondsPerVisit)))
+        fail('VROOM gaf ongeldige reistijd of levertijd terug; controleer de matrix en de ingestelde levertijd.');
+      trips.push(...wave);
+      remaining = unassigned;
+    }
+    return trips;
   }
+  let trips = solveTrips(locations.slice(1).map((_, index) => index + 1), driverCount);
   trips = completeRoutes(trips, driverCount, car.durations, locationIds, serviceSecondsPerVisit);
   trips.sort((a, b) => (routeCost(b, car.durations) + serviceTime(b, locationIds, serviceSecondsPerVisit)) -
     (routeCost(a, car.durations) + serviceTime(a, locationIds, serviceSecondsPerVisit)));
@@ -128,6 +132,11 @@ async function calculate() {
   const difference = Math.max(...balanced.durations) - Math.min(...balanced.durations);
   if (difference > maxDifferenceSeconds)
     fail(`De berekening vond geen volledige verdeling met maximaal ${maxDifferenceMinutes} minuten verschil in totale duur (gevonden: ${Math.ceil(difference / 60)} minuten).`);
+  const oldRoutes = createOldGroups(routeLabels, locations);
+  const solvedOldRoutes = oldRoutes && Array.from(oldRoutes.groups, ([driver, indices]) => {
+    const trips = solveTrips(indices, 1);
+    return [driver, trips.flatMap((trip, index) => index ? [0, ...trip] : trip)];
+  });
   const matrixStatus = await fetch(new URL(`api/versions/${version}/matrix-calculation`, apiUrl), { signal: AbortSignal.timeout(15000) });
   const settingsResponse = await fetch(new URL(`api/versions/${version}/settings`, apiUrl), { signal: AbortSignal.timeout(15000) });
   if (!matrixStatus.ok || !settingsResponse.ok) fail('De actuele matrix of instellingen konden niet worden gecontroleerd.');
@@ -144,6 +153,29 @@ async function calculate() {
       settingNumber('maxDifferenceMinutes', 30) !== maxDifferenceMinutes ||
       hash(await readFile(matrixPath)) !== expectedHash)
     fail('De matrix of de instellingen zijn gewijzigd tijdens de berekening.');
+  function summarizeRoute(route, driver) {
+    const outputTrips = splitTrips(route).map(trip => ({
+      packageCount: trip.reduce((sum, item) => sum + packageCounts[item], 0),
+      durationSeconds: routeCost(trip, car.durations),
+      distanceMeters: routeCost(trip, car.distances),
+      stops: trip.map((matrixIndex, stopIndex) => ({
+        matrixIndex, csvRecordNumber: locations[matrixIndex].csvRecordNumber,
+        packageCount: packageCounts[matrixIndex],
+        serviceSeconds: stopIndex === 0 || locationIds[trip[stopIndex - 1]] !== locationIds[matrixIndex]
+          ? serviceSecondsPerVisit : 0
+      }))
+    }));
+    const durationSeconds = routeCost(route, car.durations);
+    const serviceDurationSeconds = serviceTime(route, locationIds, serviceSecondsPerVisit);
+    const reloadDurationSeconds = (outputTrips.length - 1) * reloadSeconds;
+    return {
+      driver, durationSeconds, serviceDurationSeconds, reloadDurationSeconds,
+      totalDurationSeconds: durationSeconds + serviceDurationSeconds + reloadDurationSeconds,
+      distanceMeters: routeCost(route, car.distances),
+      trips: outputTrips, stops: outputTrips.flatMap(trip => trip.stops)
+    };
+  }
+  const oldSummaries = solvedOldRoutes && solvedOldRoutes.map(([driver, route]) => summarizeRoute(route, driver));
   const output = {
     metadata: {
       version, matrixSha256: expectedHash, inputSha256, driverCount, capacity, reloadSeconds,
@@ -152,27 +184,17 @@ async function calculate() {
       optimization: 'vroom-capacity-multitrip-v1',
       startAndEndIndex: 0
     },
-    routes: balanced.routes.map((route, index) => {
-      const outputTrips = splitTrips(route).map(trip => ({
-        packageCount: trip.reduce((sum, item) => sum + packageCounts[item], 0),
-        durationSeconds: routeCost(trip, car.durations),
-        distanceMeters: routeCost(trip, car.distances),
-        stops: trip.map((matrixIndex, stopIndex) => ({
-          matrixIndex, csvRecordNumber: locations[matrixIndex].csvRecordNumber,
-          packageCount: packageCounts[matrixIndex],
-          serviceSeconds: stopIndex === 0 || locationIds[trip[stopIndex - 1]] !== locationIds[matrixIndex]
-            ? serviceSecondsPerVisit : 0
-        }))
-      }));
-      return {
-        driver: index + 1, durationSeconds: routeCost(route, car.durations),
-        serviceDurationSeconds: serviceTime(route, locationIds, serviceSecondsPerVisit),
-        reloadDurationSeconds: (outputTrips.length - 1) * reloadSeconds,
-        totalDurationSeconds: balanced.durations[index], distanceMeters: balanced.distances[index],
-        trips: outputTrips, stops: outputTrips.flatMap(trip => trip.stops)
-      };
-    }),
-    totalDistanceMeters: balanced.distances.reduce((sum, distance) => sum + distance, 0)
+    routes: balanced.routes.map((route, index) => summarizeRoute(route, index + 1)),
+    totalDistanceMeters: balanced.distances.reduce((sum, distance) => sum + distance, 0),
+    ...(oldSummaries && {
+      oldRoutePlan: {
+        metadata: { actualDifferenceSeconds: Math.max(...oldSummaries.map(route => route.totalDurationSeconds)) -
+          Math.min(...oldSummaries.map(route => route.totalDurationSeconds)) },
+        routes: oldSummaries,
+        totalDistanceMeters: oldSummaries.reduce((sum, route) => sum + route.distanceMeters, 0),
+        unassignedRecords: oldRoutes.unassignedRecords
+      }
+    })
   };
   const temporary = `${routePath}.${process.pid}.tmp`;
   try {

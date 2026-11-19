@@ -93,6 +93,18 @@ test('API and VROOM worker produce complete routes from an actual saved matrix',
       [2, 3, 4, 5, 6, 7]);
     assert.equal(result.metadata.maxAllowedDifferenceSeconds, 1200);
     assert.ok(result.metadata.actualDifferenceSeconds <= 1200);
+    assert.equal(result.oldRoutePlan.routes.length, 1);
+    const oldRoute = result.oldRoutePlan.routes[0];
+    assert.equal(oldRoute.driver, '1');
+    assert.deepEqual(oldRoute.stops.map(stop => stop.csvRecordNumber).sort((a, b) => a - b), [2, 3, 4, 5, 6, 7]);
+    assert.equal(oldRoute.trips.length, 6);
+    assert.ok(oldRoute.trips.every(trip => trip.packageCount === 2));
+    assert.equal(oldRoute.reloadDurationSeconds, 50);
+    assert.equal(oldRoute.serviceDurationSeconds, 540);
+    assert.equal(oldRoute.durationSeconds, 4200);
+    assert.equal(oldRoute.totalDurationSeconds, 4790);
+    assert.equal(result.oldRoutePlan.totalDistanceMeters, 4200);
+    assert.deepEqual(result.oldRoutePlan.unassignedRecords, []);
     assert.equal((await put('settings/maxDifferenceMinutes', { value: '21' })).status, 200);
     assert.equal((await (await fetch(`${url}/route-calculation`)).json()).state, 'stale');
     assert.equal((await put('settings/maxDifferenceMinutes', { value: '20' })).status, 200);

@@ -91,6 +91,10 @@ test('matrix worker batches, preserves indices, rejects failures and detects int
     assert.equal((await start()).status, 503);
     ready = true;
     assert.equal((await start({ ...request, locations: [locations[1], locations[1]] })).status, 400);
+    assert.equal((await start({ ...request, locations: locations.slice(1) })).status, 400);
+    assert.equal((await start({ ...request, locations: [locations[1], locations[0]] })).status, 400);
+    assert.equal((await start({ ...request, locations: [locations[0], locations[0], locations[1]] })).status, 400);
+    assert.deepEqual(batches, []);
     assert.equal((await start()).status, 202);
     await enteredPromise;
     assert.equal((await state()).state, 'running');

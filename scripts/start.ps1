@@ -29,7 +29,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Docker Compose configuration validation failed for '$ComposeFile'."
 }
 
-if (-not $PSCmdlet.ShouldProcess('Photon, Valhalla, matrix worker, VROOM worker, review API, review website, and Traefik', 'Start existing images without building, pulling, or waiting for healthchecks')) {
+if (-not $PSCmdlet.ShouldProcess('Photon, Valhalla, matrix worker, VROOM worker, PDF worker, review API, review website, and Traefik', 'Start existing images without building, pulling, or waiting for healthchecks')) {
     return
 }
 

@@ -6,7 +6,7 @@ public sealed record AddressCheckStatus(string State);
 /// <summary>Validated snapshot for a capacity-constrained route calculation.</summary>
 public sealed record RouteCalculationInput(
     string Version, string MatrixSha256, string InputSha256, int DriverCount,
-    int ServiceSeconds, int Capacity, int ReloadSeconds, int MaxDifferenceMinutes, int[] PackageCounts);
+    int ServiceSeconds, int Capacity, int ReloadSeconds, int MaxDifferenceMinutes, int[] PackageCounts, string[] RouteLabels);
 
 public sealed record AddressCheckReport
 {

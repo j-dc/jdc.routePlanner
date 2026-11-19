@@ -7,13 +7,17 @@ import { environment } from './environment';
 interface StartLocation { label: string; latitude: number; longitude: number; [field: string]: unknown; }
 interface SettingRow { key: string; value: string; saved: string; busy: boolean; }
 interface MatrixStatus { state: 'idle' | 'running' | 'busy' | 'completed' | 'failed' | 'stale'; message?: string; }
-interface RouteResult {
+interface PdfStatus { state: 'idle' | 'running' | 'busy' | 'completed' | 'failed'; message?: string; outputDirectory?: string; }
+interface RoutePlan {
   metadata: { actualDifferenceSeconds: number };
   totalDistanceMeters: number;
-  routes: { driver: number; durationSeconds: number; serviceDurationSeconds: number; totalDurationSeconds: number;
+  routes: { driver: number | string; durationSeconds: number; serviceDurationSeconds: number; totalDurationSeconds: number;
     reloadDurationSeconds: number; distanceMeters: number;
     stops: { csvRecordNumber: number }[];
     trips: { packageCount: number; stops: { csvRecordNumber: number }[] }[] }[];
+}
+interface RouteResult extends RoutePlan {
+  oldRoutePlan?: RoutePlan & { unassignedRecords: number[] };
 }
 
 @Component({
@@ -81,9 +85,11 @@ interface RouteResult {
     <section class="settings" aria-labelledby="route-calculation-title">
       <h2 id="route-calculation-title">Routeberekening</h2>
       <div class="calculation-actions">
-        <button type="button" (click)="calculateMatrix()" [disabled]="matrixBusy || matrixState === null || matrixState === 'running' || matrixState === 'busy'">{{ matrixState === 'running' || matrixBusy ? 'Bezig…' : 'Bereken Matrix' }}</button>
+        <button type="button" (click)="calculateMatrix()" [disabled]="!settingsLoaded || !startLocation || startBusy || matrixBusy || matrixState === null || matrixState === 'running' || matrixState === 'busy'">{{ matrixState === 'running' || matrixBusy ? 'Bezig…' : 'Bereken Matrix' }}</button>
         <button type="button" (click)="calculateRoute()" [disabled]="routeBusy || routeState === null || routeState === 'running' || routeState === 'busy'">{{ routeState === 'running' || routeBusy ? 'Bezig…' : 'Bereken route' }}</button>
+        <button type="button" (click)="createPdfs()" [disabled]="!routeResult || pdfBusy || pdfState === null || pdfState === 'running' || pdfState === 'busy'">Maak chauffeur-PDF's</button>
       </div>
+      <p class="settings-empty" *ngIf="settingsLoaded && !startLocation">Stel eerst een startlocatie in om de matrix te berekenen.</p>
       <p class="settings-error" *ngIf="matrixMessage" role="alert">{{ matrixMessage }}</p>
       <p class="settings-empty" *ngIf="matrixState === 'running'">Matrixberekening loopt.</p>
       <p class="settings-empty" *ngIf="matrixState === 'busy'">Een matrixberekening voor een andere versie loopt.</p>
@@ -91,27 +97,42 @@ interface RouteResult {
       <p class="settings-error" *ngIf="routeMessage" role="alert">{{ routeMessage }}</p>
       <p class="settings-empty" *ngIf="routeState === 'running'">Routeberekening loopt.</p>
       <p class="settings-empty" *ngIf="routeState === 'busy'">Een routeberekening voor een andere versie loopt.</p>
+      <p class="settings-error" *ngIf="pdfMessage" role="alert">{{ pdfMessage }}</p>
+      <p class="settings-empty" *ngIf="pdfState === 'running'">Chauffeur-PDF's worden gemaakt.</p>
+      <p class="settings-empty" *ngIf="pdfState === 'busy'">PDF's voor een andere versie worden gemaakt.</p>
+      <p class="settings-empty" *ngIf="pdfState === 'completed' && pdfOutputDirectory">Laatst gemaakte PDF's in de uitvoermap: {{ pdfOutputDirectory }}. Maak ze opnieuw na wijzigingen aan de planning.</p>
       <div *ngIf="routeResult as result">
         <h3>Nieuwe route indeling</h3>
-        <p>Totale afstand: {{ result.totalDistanceMeters / 1000 | number:'1.1-1' }} km.
-          Verschil in totale duur: {{ result.metadata.actualDifferenceSeconds / 60 | number:'1.0-1' }} minuten.</p>
+        <ng-container *ngTemplateOutlet="routeOverview; context: { $implicit: result }"></ng-container>
+        <div *ngIf="result.oldRoutePlan as oldPlan">
+          <h3>Oude route indeling</h3>
+          <p class="settings-error" *ngIf="oldPlan.unassignedRecords.length">
+            Deze oude indeling is onvolledig: geen RIT ingevuld voor CSV-records {{ oldPlan.unassignedRecords.join(', ') }}.
+          </p>
+          <ng-container *ngTemplateOutlet="routeOverview; context: { $implicit: oldPlan }"></ng-container>
+        </div>
+      </div>
+      <ng-template #routeOverview let-plan>
+        <p>Totale afstand: {{ plan.totalDistanceMeters / 1000 | number:'1.1-1' }} km.
+          Totale duur (som chauffeurs): {{ totalDurationSeconds(plan) / 60 | number:'1.0-1' }} minuten.
+          Verschil in totale duur: {{ plan.metadata.actualDifferenceSeconds / 60 | number:'1.0-1' }} minuten.</p>
         <ul>
-          <li *ngFor="let route of result.routes">
+          <li *ngFor="let route of plan.routes">
             Chauffeur {{ route.driver }}: {{ route.stops.length }} leveringen, {{ route.trips.length }} ritten,
             {{ route.totalDurationSeconds / 60 | number:'1.0-1' }} minuten totaal
             ({{ route.durationSeconds / 60 | number:'1.0-1' }} rijden +
             {{ route.serviceDurationSeconds / 60 | number:'1.0-1' }} leveren +
             {{ route.reloadDurationSeconds / 60 | number:'1.0-1' }} herladen),
             {{ route.distanceMeters / 1000 | number:'1.1-1' }} km.
-            <div>Ritten en CSV-recordnummers in stopvolgorde
-              <p *ngFor="let trip of route.trips; let index = index">
+            <ul>
+              <li *ngFor="let trip of route.trips; let index = index">
                 Rit {{ index + 1 }} ({{ trip.packageCount }} pakketten):
                 <span *ngFor="let stop of trip.stops; let last = last">{{ stop.csvRecordNumber }}{{ last ? '' : ', ' }}</span>
-              </p>
-            </div>
+              </li>
+            </ul>
           </li>
         </ul>
-      </div>
+      </ng-template>
     </section>
   `,
   styles: [`
@@ -157,12 +178,21 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
   routeState: MatrixStatus['state'] | null = null;
   routeResult: RouteResult | null = null;
   routeMessage = '';
+  pdfBusy = false;
+  pdfState: PdfStatus['state'] | null = null;
+  pdfMessage = '';
+  pdfOutputDirectory = '';
   private readonly http = inject(HttpClient);
   private matrixTimer: ReturnType<typeof setTimeout> | undefined;
   private matrixGeneration = 0;
   private routeTimer: ReturnType<typeof setTimeout> | undefined;
   private routeGeneration = 0;
+  private pdfTimer: ReturnType<typeof setTimeout> | undefined;
+  private pdfGeneration = 0;
   private get url(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/settings`; }
+  totalDurationSeconds(plan: RoutePlan): number {
+    return plan.routes.reduce((total, route) => total + route.totalDurationSeconds, 0);
+  }
   get validDriverCount(): boolean { return /^0*[1-9][0-9]*$/.test(this.drivers.value); }
   get validServiceSeconds(): boolean {
     return /^0*[1-9][0-9]*$/.test(this.serviceSeconds.value) && Number(this.serviceSeconds.value) <= 2147483647;
@@ -198,13 +228,20 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
     this.routeState = null;
     this.routeResult = null;
     this.routeMessage = '';
+    this.pdfBusy = false;
+    this.pdfState = null;
+    this.pdfMessage = '';
+    this.pdfOutputDirectory = '';
     clearTimeout(this.matrixTimer);
     const generation = ++this.matrixGeneration;
     clearTimeout(this.routeTimer);
     const routeGeneration = ++this.routeGeneration;
+    clearTimeout(this.pdfTimer);
+    const pdfGeneration = ++this.pdfGeneration;
     if (!this.version || this.version === 'new') return;
     this.refreshMatrixStatus(generation);
     this.refreshRouteStatus(routeGeneration);
+    this.refreshPdfStatus(pdfGeneration);
     const version = this.version;
     this.loading = true;
     this.http.get<{ startLocation: StartLocation | null; settings: Record<string, string> }>(this.url).subscribe({
@@ -235,8 +272,10 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
   ngOnDestroy(): void {
     ++this.matrixGeneration;
     ++this.routeGeneration;
+    ++this.pdfGeneration;
     clearTimeout(this.matrixTimer);
     clearTimeout(this.routeTimer);
+    clearTimeout(this.pdfTimer);
   }
 
   private get startUrl(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/start-location`; }
@@ -359,6 +398,54 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
           ? error.error.detail : 'De routeberekening kon niet worden gestart.';
         this.routeBusy = false;
         this.routeTimer = setTimeout(() => this.refreshRouteStatus(generation), 3000);
+      }
+    });
+  }
+
+  private refreshPdfStatus(generation: number): void {
+    const url = `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/driver-pdfs`;
+    this.http.get<PdfStatus>(url).subscribe({
+      next: status => {
+        if (generation !== this.pdfGeneration) return;
+        if (!['idle', 'running', 'busy', 'completed', 'failed'].includes(status.state)) {
+          this.pdfState = null;
+          this.pdfMessage = 'De PDF-status is ongeldig.';
+        } else {
+          this.pdfState = status.state;
+          this.pdfMessage = status.state === 'failed' ? (status.message || 'PDF-generatie mislukt.') : '';
+          this.pdfOutputDirectory = status.state === 'completed' ? (status.outputDirectory || '') : '';
+        }
+        if (status.state === 'running' || status.state === 'busy' || this.pdfState === null)
+          this.pdfTimer = setTimeout(() => this.refreshPdfStatus(generation), 3000);
+      },
+      error: () => {
+        if (generation !== this.pdfGeneration) return;
+        this.pdfState = null;
+        this.pdfMessage = 'De PDF-status is niet beschikbaar.';
+        this.pdfTimer = setTimeout(() => this.refreshPdfStatus(generation), 3000);
+      }
+    });
+  }
+
+  createPdfs(): void {
+    const generation = ++this.pdfGeneration;
+    clearTimeout(this.pdfTimer);
+    this.pdfBusy = true;
+    this.pdfMessage = '';
+    this.pdfOutputDirectory = '';
+    this.http.post(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/driver-pdfs`, {}).subscribe({
+      next: () => {
+        if (generation !== this.pdfGeneration) return;
+        this.pdfBusy = false;
+        this.pdfState = 'running';
+        this.refreshPdfStatus(generation);
+      },
+      error: (error: unknown) => {
+        if (generation !== this.pdfGeneration) return;
+        this.pdfBusy = false;
+        this.pdfMessage = error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
+          ? error.error.detail : 'PDF-generatie kon niet worden gestart.';
+        this.pdfTimer = setTimeout(() => this.refreshPdfStatus(generation), 3000);
       }
     });
   }

@@ -6,7 +6,7 @@ import { after, before, test } from 'node:test';
 
 const baseUrl = 'http://127.0.0.1:8080';
 const header = 'rit;naam;straat;nr.;postcode;gemeente;aantal;bellen;Opmerking;opmerking;klas';
-const csv = `${header}\r\n1;Test;"Straat; deel";12;8500;Teststad;1;;;;`;
+const csv = `${header}\r\n1;Test;"Straat; deel";12;8500;Teststad;1;ja;Eerste notitie;Tweede notitie;`;
 let firstVersion;
 let secondVersion;
 let brokerState = 'idle';
@@ -19,6 +19,7 @@ let matrixInput;
 let routeState = 'idle';
 let routeInput;
 let geometryAvailable = true;
+let pdfVersion;
 const services = createServer(async (request, response) => {
   if (request.url === '/photon') {
     response.writeHead(photonReady ? 200 : 503);
@@ -54,6 +55,18 @@ const services = createServer(async (request, response) => {
     routeState = 'running';
     response.writeHead(202);
     return response.end(JSON.stringify({ state: routeState }));
+  }
+  if (request.url.startsWith('/pdf/status/')) return response.end(JSON.stringify({ state: 'idle' }));
+  if (request.url === '/pdf/start') {
+    if (!request.headers['content-length']) {
+      response.writeHead(411);
+      return response.end(JSON.stringify({ message: 'Content-Length required' }));
+    }
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    pdfVersion = JSON.parse(body).version;
+    response.writeHead(202);
+    return response.end(JSON.stringify({ state: 'running' }));
   }
   if (request.url.startsWith('/geometry/status/')) return response.end(JSON.stringify({ state: geometryState }));
   if (request.url.startsWith('/geometry/start/')) {
@@ -158,22 +171,17 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   const url = `${baseUrl}/api/versions/${version}/matrix-calculation`;
   const post = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
   assert.equal((await (await fetch(url)).json()).state, 'idle');
-  assert.equal((await fetch(url, post)).status, 202);
-  assert.deepEqual(matrixInput.locations, [{ csvRecordNumber: 2, latitude: 50, longitude: 3 }]);
-  assert.equal((await (await fetch(url)).json()).state, 'running');
-  assert.equal((await fetch(url, post)).status, 409);
+  const missingStart = await fetch(url, post);
+  assert.equal(missingStart.status, 409);
+  assert.match((await missingStart.json()).detail, /startlocatie/i);
+  assert.equal(matrixInput, undefined);
+  const review = await (await fetch(`${baseUrl}/api/versions/${version}/review`)).json();
+  const oldLocations = [{ csvRecordNumber: 2, latitude: 50, longitude: 3 }];
+  const fingerprint = createHash('sha256').update(JSON.stringify(oldLocations)).digest('hex').toUpperCase();
   matrixState = 'completed';
-  assert.equal((await (await fetch(url)).json()).state, 'stale');
-  const fingerprint = createHash('sha256').update(JSON.stringify(matrixInput.locations)).digest('hex').toUpperCase();
   await writeFile(`/source/matrix-${version}.json`, JSON.stringify({ metadata: {
-    version,
-    reviewFingerprint: matrixInput.reviewFingerprint, reviewUpdatedAtUtc: matrixInput.reviewUpdatedAtUtc,
-    locationFingerprint: fingerprint, locations: matrixInput.locations
-  } }));
-  assert.equal((await (await fetch(url)).json()).state, 'completed');
-  await writeFile(`/source/matrix-${version}.json`, JSON.stringify({ metadata: {
-    version, reviewFingerprint: matrixInput.reviewFingerprint, reviewUpdatedAtUtc: matrixInput.reviewUpdatedAtUtc,
-    locationFingerprint: fingerprint, locations: [{ ...matrixInput.locations[0], latitude: 51 }]
+    version, reviewFingerprint: review.sourceFingerprint, reviewUpdatedAtUtc: review.updatedAtUtc,
+    locationFingerprint: fingerprint, locations: oldLocations
   } }));
   assert.equal((await (await fetch(url)).json()).state, 'stale');
   const routeUrl = `${baseUrl}/api/versions/${version}/route-calculation`;
@@ -183,13 +191,19 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
     body: JSON.stringify({ label: 'Test', latitude: 50, longitude: 3 })
   })).status, 200);
   assert.equal((await (await fetch(url)).json()).state, 'stale');
-  const locations = [{ csvRecordNumber: null, latitude: 50, longitude: 3 }, ...matrixInput.locations];
+  assert.equal((await fetch(url, post)).status, 202);
+  const locations = [{ csvRecordNumber: null, latitude: 50, longitude: 3 }, ...oldLocations];
+  assert.deepEqual(matrixInput.locations, locations);
+  assert.equal((await (await fetch(url)).json()).state, 'running');
+  assert.equal((await fetch(url, post)).status, 409);
+  matrixState = 'completed';
   const newFingerprint = createHash('sha256').update(JSON.stringify(locations)).digest('hex').toUpperCase();
   const matrix = JSON.stringify({ metadata: {
     version, reviewFingerprint: matrixInput.reviewFingerprint, reviewUpdatedAtUtc: matrixInput.reviewUpdatedAtUtc,
     locationFingerprint: newFingerprint, locations
   } });
   await writeFile(`/source/matrix-${version}.json`, matrix);
+  assert.equal((await (await fetch(url)).json()).state, 'completed');
   assert.equal((await fetch(routeUrl, post)).status, 409);
   const driverUrl = `${baseUrl}/api/versions/${version}/settings/nmbDrivers`;
   const setDrivers = value => fetch(driverUrl, {
@@ -207,6 +221,7 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   assert.equal(routeInput.reloadSeconds, 10);
   assert.equal(routeInput.maxDifferenceMinutes, 30);
   assert.deepEqual(routeInput.packageCounts, [1]);
+  assert.deepEqual(routeInput.routeLabels, ['1']);
   assert.equal(routeInput.matrixSha256, createHash('sha256').update(matrix).digest('hex').toUpperCase());
   assert.equal((await (await fetch(routeUrl)).json()).state, 'running');
   assert.equal((await fetch(routeUrl, post)).status, 409);
@@ -226,8 +241,29 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
       optimization: 'vroom-capacity-multitrip-v1', inputSha256: routeInput.inputSha256,
       capacity: 60, reloadSeconds: 10, maxAllowedDifferenceSeconds: 1800 }, routes: []
   }));
+  assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
+  await writeFile(`/source/routes-${version}.json`, JSON.stringify({
+    metadata: { version, driverCount: 1, matrixSha256: routeInput.matrixSha256,
+      serviceTimeModel: 'per-location-visit-v1', serviceSecondsPerVisit: 60,
+      optimization: 'vroom-capacity-multitrip-v1', inputSha256: routeInput.inputSha256,
+      capacity: 60, reloadSeconds: 10, maxAllowedDifferenceSeconds: 1800 }, routes: [], oldRoutePlan: {}
+  }));
   assert.equal((await (await fetch(routeUrl)).json()).state, 'completed');
   assert.equal((await fetch(`${baseUrl}/api/versions/${version}/routes`)).status, 200);
+  const pdfUrl = `${baseUrl}/api/versions/${version}/driver-pdfs`;
+  const pdfDataUrl = `${baseUrl}/api/versions/${version}/driver-pdf-data`;
+  const pdfResponse = await fetch(pdfDataUrl);
+  assert.equal(pdfResponse.status, 200);
+  const pdfData = await pdfResponse.json();
+  assert.ok(!('osmGeometry' in pdfData));
+  assert.deepEqual(pdfData.deliveries, [{ csvRecordNumber: 2, name: 'Test', street: 'Straat; deel',
+    houseNumber: '12', postcode: '8500', municipality: 'Teststad', packageCount: 1,
+    bellen: 'ja', remarkUpper: 'Eerste notitie', remarkLower: 'Tweede notitie' }]);
+  assert.deepEqual(pdfData.locations, locations);
+  assert.equal((await (await fetch(pdfUrl)).json()).state, 'idle');
+  assert.equal((await fetch(pdfUrl, post)).status, 202);
+  assert.equal(pdfVersion, version);
+  assert.equal((await fetch(pdfUrl, { ...post, headers: { ...post.headers, origin: 'http://example.test' } })).status, 403);
   const geometryUrl = `${baseUrl}/api/versions/${version}/route-geometry`;
   assert.equal((await fetch(geometryUrl)).status, 200);
   geometryAvailable = false;
@@ -241,6 +277,8 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
   assert.equal((await fetch(`${baseUrl}/api/versions/${version}/routes`)).status, 409);
   assert.equal((await fetch(geometryUrl)).status, 409);
+  assert.equal((await fetch(pdfDataUrl)).status, 409);
+  assert.equal((await fetch(pdfUrl, post)).status, 409);
   for (const invalid of ['0', '-1', '1.5', '', '2147483648']) {
     assert.equal((await setService(invalid)).status, 200);
     assert.equal((await fetch(routeUrl, post)).status, 409);

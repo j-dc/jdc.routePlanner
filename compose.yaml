@@ -145,7 +145,7 @@ services:
     restart: unless-stopped
 
   traefik:
-    image: traefik:v3.3.2
+    image: traefik:3.7.19
     command:
       - --providers.file.filename=/etc/traefik/dynamic.yaml
       - --providers.file.watch=true
@@ -276,6 +276,30 @@ services:
       - ALL
     restart: unless-stopped
 
+  driver-pdf:
+    build:
+      context: .
+      dockerfile: containers/driver-pdf/Dockerfile
+    environment:
+      DRIVER_PDF_API_URL: http://routeplanner-api:8080/
+      DRIVER_PDF_OUTPUT_DIR: /output
+    volumes:
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /output
+    expose:
+      - "8084"
+    networks:
+      - route-planning
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
   routeplanner-api:
     build:
       context: .
@@ -301,6 +325,7 @@ services:
       - address-check-broker
       - matrix-worker
       - vroom-worker
+      - driver-pdf
     networks:
       - default
       - orchestration

@@ -40,6 +40,23 @@ export function splitTrips(route) {
   return trips;
 }
 
+export function createOldGroups(routeLabels, locations) {
+  if (!routeLabels.some(label => label.length > 0)) return null;
+  const groups = new Map(), unassignedRecords = [];
+  const indices = routeLabels.map((_, index) => index + 1)
+    .sort((a, b) => locations[a].csvRecordNumber - locations[b].csvRecordNumber);
+  for (const index of indices) {
+    const label = routeLabels[index - 1];
+    if (!label) {
+      unassignedRecords.push(locations[index].csvRecordNumber);
+      continue;
+    }
+    if (!groups.has(label)) groups.set(label, []);
+    groups.get(label).push(index);
+  }
+  return { groups, unassignedRecords };
+}
+
 function tripInfo(route, packageCounts) {
   const segments = [], loads = [0], sizes = [0];
   let segment = 0;

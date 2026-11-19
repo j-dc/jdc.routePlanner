@@ -6,6 +6,10 @@ using Microsoft.VisualBasic.FileIO;
 
 namespace RoutePlanner.Api;
 
+public sealed record DeliveryCsvRow(
+    int CsvRecordNumber, string Name, string Street, string HouseNumber, string Postcode,
+    string Municipality, int PackageCount, string Bellen, string RemarkUpper, string RemarkLower);
+
 public static class InputCsvStore
 {
     private const string VersionFormat = "yyyyMMdd'T'HHmmssfffffff'Z'";
@@ -38,7 +42,14 @@ public static class InputCsvStore
         return versions.ToArray();
     }
 
-    public static async Task<(string Hash, Dictionary<int, int> Counts)> ReadPackageCountsAsync(
+    public static async Task<(string Hash, Dictionary<int, int> Counts, Dictionary<int, string> RouteLabels)> ReadPackageCountsAsync(
+        string path, int capacity, CancellationToken cancellationToken)
+    {
+        var (hash, rows, labels) = await ReadDeliveriesAsync(path, capacity, cancellationToken);
+        return (hash, rows.ToDictionary(row => row.CsvRecordNumber, row => row.PackageCount), labels);
+    }
+
+    public static async Task<(string Hash, List<DeliveryCsvRow> Rows, Dictionary<int, string> RouteLabels)> ReadDeliveriesAsync(
         string path, int capacity, CancellationToken cancellationToken)
     {
         var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
@@ -56,7 +67,8 @@ public static class InputCsvStore
         {
             if (parser.EndOfData || !ExpectedHeaders.SequenceEqual(parser.ReadFields() ?? []))
                 throw new InvalidDataException("De invoer-CSV heeft een ongeldige kolomindeling.");
-            var counts = new Dictionary<int, int>();
+            var rows = new List<DeliveryCsvRow>();
+            var routeLabels = new Dictionary<int, string>();
             var recordNumber = 1;
             while (!parser.EndOfData)
             {
@@ -67,10 +79,12 @@ public static class InputCsvStore
                     throw new InvalidDataException($"CSV-record {recordNumber} heeft geen geldig positief aantal pakketten.");
                 if (count > capacity)
                     throw new InvalidDataException($"CSV-record {recordNumber} bevat meer pakketten dan de capaciteit.");
-                counts.Add(recordNumber, count);
+                rows.Add(new DeliveryCsvRow(recordNumber, fields[1], fields[2], fields[3], fields[4], fields[5],
+                    count, fields[7], fields[8], fields[9]));
+                routeLabels.Add(recordNumber, fields[0].Trim());
             }
-            if (counts.Count == 0) throw new InvalidDataException("De invoer-CSV bevat geen leveringen.");
-            return (Convert.ToHexString(SHA256.HashData(bytes)), counts);
+            if (rows.Count == 0) throw new InvalidDataException("De invoer-CSV bevat geen leveringen.");
+            return (Convert.ToHexString(SHA256.HashData(bytes)), rows, routeLabels);
         }
         catch (MalformedLineException)
         {

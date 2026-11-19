@@ -6,9 +6,17 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { balanceRoutes, completeRoutes, routeCost, serviceTime, splitTrips } from '/app/balance.mjs';
+import { balanceRoutes, completeRoutes, createOldGroups, routeCost, serviceTime, splitTrips } from '/app/balance.mjs';
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
+
+test('old routes keep each RIT together and report missing RIT', () => {
+  const locations = [null, 5, 2, 4, 3, 6].map(csvRecordNumber => ({ csvRecordNumber }));
+  assert.equal(createOldGroups(['', '', '', '', ''], locations), null);
+  const result = createOldGroups(['A', 'A', 'B', 'A', ''], locations);
+  assert.deepEqual([...result.groups], [['A', [2, 4, 1]], ['B', [3]]]);
+  assert.deepEqual(result.unassignedRecords, [6]);
+});
 
 test('balancing preserves deliveries and improves driving-time spread', () => {
   const weights = [0, 100, 100, 100, 100, 100];
@@ -175,13 +183,14 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
     }
     throw new Error(`Route status did not become ${expected}`);
   }
-  async function start(matrix, requestedDrivers = 2, requestedService = serviceSeconds, counts = null) {
+  async function start(matrix, requestedDrivers = 2, requestedService = serviceSeconds, counts = null, labels = null) {
     const data = JSON.stringify(matrix);
     await writeFile(join(directory, 'matrix.json'), data);
     return fetch(`${base}/start`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ version: 'legacy', driverCount: requestedDrivers, serviceSeconds: requestedService,
         capacity, reloadSeconds, maxDifferenceMinutes, packageCounts: counts ?? matrix.metadata.locations.slice(1).map(() => 1),
+        routeLabels: labels ?? matrix.metadata.locations.slice(1).map(() => ''),
         inputSha256: 'A'.repeat(64),
         matrixSha256: createHash('sha256').update(data).digest('hex').toUpperCase() })
     });
@@ -232,6 +241,7 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
       Math.max(...output.routes.map(route => route.totalDurationSeconds)) - Math.min(...output.routes.map(route => route.totalDurationSeconds)));
     assert.equal(output.metadata.maxAllowedDifferenceSeconds, 1800);
     assert.ok(output.metadata.actualDifferenceSeconds <= 1800);
+    assert.equal(output.oldRoutePlan, undefined);
 
     block = true;
     enteredPromise = new Promise(resolve => { entered = resolve; });
@@ -263,7 +273,7 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
     driverCount = 2;
     serviceSeconds = 60;
     capacity = 3;
-    assert.equal((await start(matrix, 2, 60, [2, 2, 2, 2, 2, 2])).status, 202);
+    assert.equal((await start(matrix, 2, 60, [2, 2, 2, 2, 2, 2], ['A', 'A', 'B', 'A', '', 'B'])).status, 202);
     await until('completed');
     const multi = JSON.parse(await readFile(join(directory, 'routes.json'), 'utf8'));
     assert.equal(multi.routes.reduce((sum, route) => sum + route.stops.length, 0), 6);
@@ -275,6 +285,36 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
       assert.equal(route.totalDurationSeconds, route.durationSeconds + route.serviceDurationSeconds + route.reloadDurationSeconds);
       assert.ok(route.trips.every(trip => trip.stops[0].serviceSeconds === 60));
     }
+    const old = multi.oldRoutePlan;
+    assert.deepEqual(old.unassignedRecords, [6]);
+    assert.deepEqual(old.routes.map(route => route.driver), ['A', 'B']);
+    assert.deepEqual(old.routes.map(route => route.stops.map(stop => stop.csvRecordNumber).sort((a, b) => a - b)),
+      [[2, 3, 5], [4, 7]]);
+    for (const route of old.routes) {
+      assert.ok(route.trips.every(trip => trip.packageCount === 2));
+      const indices = route.trips.flatMap((trip, index) =>
+        [...(index ? [0] : []), ...trip.stops.map(stop => stop.matrixIndex)]);
+      assert.equal(route.durationSeconds, routeCost(indices, distances));
+      assert.equal(route.distanceMeters, routeCost(indices, distances));
+      assert.equal(route.serviceDurationSeconds, serviceTime(indices, [0, 1, 1, 3, 4, 5, 6], 60));
+      assert.equal(route.reloadDurationSeconds, (route.trips.length - 1) * 10);
+      assert.equal(route.totalDurationSeconds, route.durationSeconds + route.serviceDurationSeconds + route.reloadDurationSeconds);
+    }
+    assert.equal(old.totalDistanceMeters, old.routes.reduce((sum, route) => sum + route.distanceMeters, 0));
+    driverCount = 1;
+    capacity = 60;
+    const reorderCosts = [[0, 1, 100, 100], [100, 0, 100, 1],
+      [1, 100, 0, 100], [100, 100, 1, 0]];
+    const reorder = { metadata: { locations: locations.slice(0, 4).map((location, index) =>
+      ({ ...location, latitude: 50 + index / 100 })) },
+    matrices: { car: { durations: reorderCosts, distances: reorderCosts, costs: reorderCosts } } };
+    assert.equal((await start(reorder, 1, 60, [1, 1, 1], ['X', 'X', 'X'])).status, 202);
+    await until('completed');
+    const reordered = JSON.parse(await readFile(join(directory, 'routes.json'), 'utf8')).oldRoutePlan.routes[0];
+    assert.deepEqual(reordered.stops.map(stop => stop.csvRecordNumber), [2, 4, 3]);
+    assert.equal(reordered.distanceMeters, 4);
+    driverCount = 2;
+    capacity = 3;
     block = true;
     enteredPromise = new Promise(resolve => { entered = resolve; });
     assert.equal((await start(matrix)).status, 202);
