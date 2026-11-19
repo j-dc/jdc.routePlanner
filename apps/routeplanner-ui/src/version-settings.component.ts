@@ -61,7 +61,11 @@ interface SettingRow { key: string; value: string; saved: string; busy: boolean;
     </section>
     <section class="settings" aria-labelledby="route-calculation-title">
       <h2 id="route-calculation-title">Routeberekening</h2>
-      <button type="button" (click)="calculateRoute()" [disabled]="routeBusy">{{ routeBusy ? 'Bezig…' : 'Bereken route' }}</button>
+      <div class="calculation-actions">
+        <button type="button" (click)="calculateMatrix()" [disabled]="matrixBusy">{{ matrixBusy ? 'Bezig…' : 'Bereken Matrix' }}</button>
+        <button type="button" (click)="calculateRoute()" [disabled]="routeBusy">{{ routeBusy ? 'Bezig…' : 'Bereken route' }}</button>
+      </div>
+      <p class="settings-error" *ngIf="matrixMessage" role="alert">{{ matrixMessage }}</p>
       <p class="settings-error" *ngIf="routeMessage" role="alert">{{ routeMessage }}</p>
     </section>
   `,
@@ -75,6 +79,7 @@ interface SettingRow { key: string; value: string; saved: string; busy: boolean;
     .settings-list { margin: 0 0 14px; padding: 0; list-style: none; }
     .settings-list li, .settings-add { display: grid; grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) auto auto; gap: 8px; align-items: center; margin-bottom: 8px; }
     .settings-add { grid-template-columns: minmax(120px, 200px) minmax(0, 1fr) auto; }
+    .calculation-actions { display: flex; flex-wrap: wrap; gap: 8px; }
     label { color: var(--muted); font-size: 13px; font-weight: 700; overflow-wrap: anywhere; }
     input { min-height: 34px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 5px; }
     button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--forest); border-radius: 5px; background: var(--forest); color: white; font-weight: 700; }
@@ -99,6 +104,8 @@ export class VersionSettingsComponent implements OnChanges {
   loading = false;
   adding = false;
   error = '';
+  matrixBusy = false;
+  matrixMessage = '';
   routeBusy = false;
   routeMessage = '';
   private readonly http = inject(HttpClient);
@@ -115,6 +122,8 @@ export class VersionSettingsComponent implements OnChanges {
     this.startSearched = false;
     this.startQuery = '';
     this.error = '';
+    this.matrixBusy = false;
+    this.matrixMessage = '';
     this.routeBusy = false;
     this.routeMessage = '';
     if (!this.version || this.version === 'new') return;
@@ -137,6 +146,22 @@ export class VersionSettingsComponent implements OnChanges {
   }
 
   private get startUrl(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/start-location`; }
+
+  calculateMatrix(): void {
+    const version = this.version;
+    this.matrixBusy = true;
+    this.matrixMessage = '';
+    this.http.post(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(version)}/matrix-calculation`, {}).subscribe({
+      next: () => { if (version === this.version) this.matrixBusy = false; },
+      error: (error: unknown) => {
+        if (version !== this.version) return;
+        this.matrixMessage = error instanceof HttpErrorResponse && error.status === 501
+          ? 'Matrixberekening is nog niet beschikbaar.'
+          : 'De matrixberekening kon niet worden gestart.';
+        this.matrixBusy = false;
+      }
+    });
+  }
 
   calculateRoute(): void {
     const version = this.version;

@@ -1,4 +1,4 @@
-FROM jdc-route-planner/powershell-base:7.6.6-alpine-3.24.3
+FROM jdc-route-planner/powershell-base:7.7.0-alpine-3.24.4
 
 USER root
 RUN mkdir -p /jobs && chmod 1777 /jobs

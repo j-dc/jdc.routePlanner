@@ -1,8 +1,8 @@
-FROM jdc-route-planner/powershell-base:7.6.6-alpine-3.24.3 AS certificates
+FROM jdc-route-planner/powershell-base:7.7.0-alpine-3.24.4 AS certificates
 FROM ubuntu:24.04
 
-ARG POWERSHELL_VERSION=7.6.6
-ARG POWERSHELL_SHA256=ddbc4a2d113bbd46d283cfedcbcd117a70caefd7673f41f2b4e0000badf103bc
+ARG POWERSHELL_VERSION=7.7.0
+ARG POWERSHELL_SHA256=c89d9c682d2c403dfe726f3df948e359675235a5bd6fab535776de69729ca0cb
 
 COPY --from=certificates /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \

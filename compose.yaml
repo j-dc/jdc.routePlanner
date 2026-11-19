@@ -2,7 +2,7 @@ name: jdc-route-planner
 
 services:
   powershell-base:
-    image: jdc-route-planner/powershell-base:7.6.6-alpine-3.24.3
+    image: jdc-route-planner/powershell-base:7.7.0-alpine-3.24.4
     build:
       context: .
       dockerfile: containers/powershell/Dockerfile

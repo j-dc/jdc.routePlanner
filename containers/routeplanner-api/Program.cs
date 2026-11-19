@@ -165,6 +165,18 @@ app.MapGet("/api/versions/{version}", (string version) =>
         ? Results.Ok(new { id = version })
         : Results.NotFound());
 
+app.MapPost("/api/versions/{version}/matrix-calculation", (string version) =>
+{
+    if (!InputCsvStore.IsVersion(version) || !File.Exists(InputCsvStore.InputPath(inputCsvPath, version)))
+        return Results.NotFound();
+    return Results.Problem("Matrixberekening is nog niet beschikbaar.", statusCode: StatusCodes.Status501NotImplemented);
+})
+.WithName("CalculateMatrix")
+.WithSummary("Start matrixberekening voor een planningsversie")
+.WithDescription("Placeholder: matrixberekening is nog niet geïmplementeerd.")
+.ProducesProblem(StatusCodes.Status501NotImplemented)
+.Produces(StatusCodes.Status404NotFound);
+
 app.MapPost("/api/versions/{version}/route-calculation", (string version) =>
 {
     if (!InputCsvStore.IsVersion(version) || !File.Exists(InputCsvStore.InputPath(inputCsvPath, version)))

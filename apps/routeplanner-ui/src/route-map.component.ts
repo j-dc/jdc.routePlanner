@@ -49,7 +49,13 @@ export interface MapLocation {
         <button *ngIf="!geometryRunning && !geometryBusy" type="button" (click)="refreshGeometry()" [disabled]="geometryStarting">{{ geometryStarting ? 'Starten...' : 'Herbereken en laad de lokale geometrie' }}</button>
       </div>
       <div class="map-body">
-        <div #mapTarget class="map" tabindex="0" aria-label="Kaart met bevestigde leverlocaties"></div>
+        <div class="map-container">
+          <div #mapTarget class="map" tabindex="0" aria-label="Kaart met bevestigde leverlocaties"></div>
+          <details class="map-options">
+            <summary>Kaartopties</summary>
+            <label><input #clusterOption type="checkbox" [checked]="clusteringEnabled" (change)="setClustering(clusterOption.checked)"> Leveradressen clusteren</label>
+          </details>
+        </div>
         <aside class="selection-panel" *ngIf="selectedLocations.length" aria-label="Geselecteerde leveringen">
           <div class="selection-heading"><h3>Leveringen</h3><span>{{ selectedLocations.length }}</span></div>
           <ul><li *ngFor="let location of selectedLocations"><strong>CSV-rij {{ location.recordNumber }}</strong><span>{{ location.address }}</span></li></ul>
@@ -67,8 +73,12 @@ export interface MapLocation {
     .map-eyebrow { margin: 0 0 4px; color: var(--muted); font-size: 11px; font-weight: 750; text-transform: uppercase; }
     .location-count, .selection-heading span { color: var(--muted); font-size: 12px; font-weight: 700; }
     .map-body { display: grid; grid-template-columns: minmax(0, 1fr) auto; border: 1px solid var(--line); background: #dce5df; }
+    .map-container { min-width: 0; position: relative; }
     .map { min-width: 0; height: clamp(400px, 60vh, 700px); }
     .map:focus-visible { outline: 3px solid #eaa35e; outline-offset: -3px; }
+    .map-options { position: absolute; z-index: 1; top: 8px; right: 8px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); font-size: 13px; }
+    .map-options summary { cursor: pointer; font-weight: 700; }
+    .map-options label { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
     .selection-panel { width: 270px; max-height: clamp(400px, 60vh, 700px); overflow: auto; padding: 18px; border-left: 1px solid var(--line); background: var(--surface); }
     .selection-heading h3 { font-size: 15px; }
     .selection-panel ul { margin: 12px 0 0; padding: 0; list-style: none; }
@@ -95,12 +105,16 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   @ViewChild('mapTarget') private mapTarget!: ElementRef<HTMLElement>;
 
   selectedLocations: MapLocation[] = [];
+  clusteringEnabled = false;
   geometryError = '';
   geometryRunning = false;
   geometryBusy = false;
   geometryStarting = false;
   missingContours = 0;
   private readonly source = new VectorSource<Feature<Point>>();
+  private readonly clusterSource = new Cluster({ distance: 36, source: this.source });
+  private readonly markerLayer = new VectorLayer({ source: this.source });
+  private readonly clusterLayer = new VectorLayer({ source: this.clusterSource, visible: false });
   private readonly geometrySource = new VectorSource();
   private readonly startSource = new VectorSource();
   private geometrySubscription: Subscription | null = null;
@@ -111,11 +125,9 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   private map: Map | null = null;
 
   ngAfterViewInit(): void {
-    const clusters = new Cluster({ distance: 36, source: this.source });
-    const markers = new VectorLayer({
-      source: clusters,
-      style: feature => {
-        const locations = feature.get('features') as Feature<Point>[];
+    for (const layer of [this.markerLayer, this.clusterLayer]) {
+      layer.setStyle(feature => {
+        const locations = (feature.get('features') as Feature<Point>[] | undefined) ?? [feature];
         const count = locations.length;
         const hasMissingContour = locations.some(location => location.get('missingContour') === true);
         return new Style({
@@ -126,8 +138,8 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
           }),
           text: count > 1 ? new Text({ text: String(count), fill: new Fill({ color: hasMissingContour ? '#173f55' : '#ffffff' }), font: '700 12px sans-serif' }) : undefined,
         });
-      },
-    });
+      });
+    }
     this.map = new Map({
       target: this.mapTarget.nativeElement,
       layers: [new TileLayer({ source: new OSM() }), new VectorLayer({
@@ -136,7 +148,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
           fill: new Fill({ color: 'rgba(230, 129, 58, 0.3)' }),
           stroke: new Stroke({ color: '#b04d25', width: 3 }),
         }),
-      }), markers, new VectorLayer({
+      }), this.markerLayer, this.clusterLayer, new VectorLayer({
         source: this.startSource,
         zIndex: 10,
         style: new Style({
@@ -151,10 +163,13 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
       view: new View({ center: fromLonLat([3.3, 50.9]), zoom: 10 }),
     });
     this.map.on('singleclick', event => {
-      const cluster = this.map?.forEachFeatureAtPixel(event.pixel, feature => feature, { layerFilter: layer => layer === markers });
-      const features = cluster?.get('features') as Feature<Point>[] | undefined;
-      this.selectedLocations = features?.map(feature => feature.get('location') as MapLocation)
-        .sort((first, second) => first.recordNumber - second.recordNumber) ?? [];
+      const features = this.map?.getFeaturesAtPixel(event.pixel, {
+        layerFilter: layer => layer === this.markerLayer || layer === this.clusterLayer,
+      }) ?? [];
+      this.selectedLocations = features
+        .flatMap(feature => (feature.get('features') as Feature<Point>[] | undefined) ?? [feature])
+        .map(feature => feature.get('location') as MapLocation)
+        .sort((first, second) => first.recordNumber - second.recordNumber);
     });
     this.updateLocations();
     this.loadGeometry();
@@ -175,6 +190,14 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     if (this.statusTimer !== null) clearTimeout(this.statusTimer);
     this.map?.setTarget(undefined);
     this.map = null;
+    this.clusterSource.setSource(null);
+  }
+
+  setClustering(enabled: boolean): void {
+    this.clusteringEnabled = enabled;
+    this.markerLayer.setVisible(!enabled);
+    this.clusterLayer.setVisible(enabled);
+    this.selectedLocations = [];
   }
 
   private updateLocations(): void {

@@ -1,6 +1,18 @@
 @baseUrl = http://routing-api.localtest.me
 @version = 20261117T1234561234567Z
 
+### Matrixplaceholder voor een bestaande planningsversie
+POST {{baseUrl}}/api/versions/{{version}}/matrix-calculation
+Content-Type: application/json
+
+{}
+
+### Matrixplaceholder voor een onbekende planningsversie
+POST {{baseUrl}}/api/versions/invalid/matrix-calculation
+Content-Type: application/json
+
+{}
+
 ### Placeholder voor een bestaande planningsversie
 POST {{baseUrl}}/api/versions/{{version}}/route-calculation
 Content-Type: application/json
