@@ -1,11 +1,12 @@
 import { CommonModule } from '@angular/common';
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { Component, Input, OnChanges, inject } from '@angular/core';
+import { Component, Input, OnChanges, OnDestroy, inject } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { environment } from './environment';
 
 interface StartLocation { label: string; latitude: number; longitude: number; [field: string]: unknown; }
 interface SettingRow { key: string; value: string; saved: string; busy: boolean; }
+interface MatrixStatus { state: 'idle' | 'running' | 'busy' | 'completed' | 'failed' | 'stale'; message?: string; }
 
 @Component({
   selector: 'app-version-settings',
@@ -62,10 +63,13 @@ interface SettingRow { key: string; value: string; saved: string; busy: boolean;
     <section class="settings" aria-labelledby="route-calculation-title">
       <h2 id="route-calculation-title">Routeberekening</h2>
       <div class="calculation-actions">
-        <button type="button" (click)="calculateMatrix()" [disabled]="matrixBusy">{{ matrixBusy ? 'Bezig…' : 'Bereken Matrix' }}</button>
+        <button type="button" (click)="calculateMatrix()" [disabled]="matrixBusy || matrixState === null || matrixState === 'running' || matrixState === 'busy'">{{ matrixState === 'running' || matrixBusy ? 'Bezig…' : 'Bereken Matrix' }}</button>
         <button type="button" (click)="calculateRoute()" [disabled]="routeBusy">{{ routeBusy ? 'Bezig…' : 'Bereken route' }}</button>
       </div>
       <p class="settings-error" *ngIf="matrixMessage" role="alert">{{ matrixMessage }}</p>
+      <p class="settings-empty" *ngIf="matrixState === 'running'">Matrixberekening loopt.</p>
+      <p class="settings-empty" *ngIf="matrixState === 'busy'">Een matrixberekening voor een andere versie loopt.</p>
+      <p class="settings-empty" *ngIf="matrixState === 'completed'">Matrixberekening voltooid.</p>
       <p class="settings-error" *ngIf="routeMessage" role="alert">{{ routeMessage }}</p>
     </section>
   `,
@@ -89,7 +93,7 @@ interface SettingRow { key: string; value: string; saved: string; busy: boolean;
     .settings-empty { color: var(--muted); font-size: 13px; }
   `]
 })
-export class VersionSettingsComponent implements OnChanges {
+export class VersionSettingsComponent implements OnChanges, OnDestroy {
   @Input({ required: true }) version = '';
   rows: SettingRow[] = [];
   drivers: SettingRow = { key: 'nmbDrivers', value: '', saved: '', busy: false };
@@ -105,10 +109,13 @@ export class VersionSettingsComponent implements OnChanges {
   adding = false;
   error = '';
   matrixBusy = false;
+  matrixState: MatrixStatus['state'] | null = null;
   matrixMessage = '';
   routeBusy = false;
   routeMessage = '';
   private readonly http = inject(HttpClient);
+  private matrixTimer: ReturnType<typeof setTimeout> | undefined;
+  private matrixGeneration = 0;
   private get url(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/settings`; }
   get validDriverCount(): boolean { return /^0*[1-9][0-9]*$/.test(this.drivers.value); }
 
@@ -123,10 +130,14 @@ export class VersionSettingsComponent implements OnChanges {
     this.startQuery = '';
     this.error = '';
     this.matrixBusy = false;
+    this.matrixState = null;
     this.matrixMessage = '';
     this.routeBusy = false;
     this.routeMessage = '';
+    clearTimeout(this.matrixTimer);
+    const generation = ++this.matrixGeneration;
     if (!this.version || this.version === 'new') return;
+    this.refreshMatrixStatus(generation);
     const version = this.version;
     this.loading = true;
     this.http.get<{ startLocation: StartLocation | null; settings: Record<string, string> }>(this.url).subscribe({
@@ -145,20 +156,57 @@ export class VersionSettingsComponent implements OnChanges {
     });
   }
 
+  ngOnDestroy(): void {
+    ++this.matrixGeneration;
+    clearTimeout(this.matrixTimer);
+  }
+
   private get startUrl(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/start-location`; }
+
+  private refreshMatrixStatus(generation: number): void {
+    const version = this.version;
+    this.http.get<MatrixStatus>(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(version)}/matrix-calculation`).subscribe({
+      next: status => {
+        if (generation !== this.matrixGeneration) return;
+        if (!['idle', 'running', 'busy', 'completed', 'failed', 'stale'].includes(status.state)) {
+          this.matrixState = null;
+          this.matrixMessage = 'De matrixstatus is ongeldig.';
+        } else {
+          this.matrixState = status.state;
+          this.matrixMessage = status.state === 'failed' || status.state === 'stale'
+            ? (status.message || 'De matrixberekening is niet beschikbaar.') : '';
+        }
+        this.matrixTimer = setTimeout(() => this.refreshMatrixStatus(generation), 3000);
+      },
+      error: () => {
+        if (generation !== this.matrixGeneration) return;
+        this.matrixState = null;
+        this.matrixMessage = 'De matrixstatus is niet beschikbaar.';
+        this.matrixTimer = setTimeout(() => this.refreshMatrixStatus(generation), 3000);
+      }
+    });
+  }
 
   calculateMatrix(): void {
     const version = this.version;
+    const generation = ++this.matrixGeneration;
+    clearTimeout(this.matrixTimer);
     this.matrixBusy = true;
     this.matrixMessage = '';
     this.http.post(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(version)}/matrix-calculation`, {}).subscribe({
-      next: () => { if (version === this.version) this.matrixBusy = false; },
-      error: (error: unknown) => {
-        if (version !== this.version) return;
-        this.matrixMessage = error instanceof HttpErrorResponse && error.status === 501
-          ? 'Matrixberekening is nog niet beschikbaar.'
-          : 'De matrixberekening kon niet worden gestart.';
+      next: () => {
+        if (generation !== this.matrixGeneration) return;
+        this.matrixState = 'running';
         this.matrixBusy = false;
+        this.refreshMatrixStatus(generation);
+      },
+      error: (error: unknown) => {
+        if (generation !== this.matrixGeneration) return;
+        this.matrixState = null;
+        this.matrixMessage = error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
+          ? error.error.detail : 'De matrixberekening kon niet worden gestart.';
+        this.matrixBusy = false;
+        this.matrixTimer = setTimeout(() => this.refreshMatrixStatus(generation), 3000);
       }
     });
   }

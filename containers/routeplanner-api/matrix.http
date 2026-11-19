@@ -1,0 +1,11 @@
+@baseUrl = http://routing-api.localtest.me
+@version = legacy
+
+### Matrixstatus
+GET {{baseUrl}}/api/versions/{{version}}/matrix-calculation
+
+### Start een berekening na een volledig bevestigde review
+POST {{baseUrl}}/api/versions/{{version}}/matrix-calculation
+Content-Type: application/json
+
+{}

@@ -14,12 +14,27 @@ let photonReady = true;
 let startCount = 0;
 let geometryState = 'idle';
 let geometryStartCount = 0;
-const services = createServer((request, response) => {
+let matrixState = 'idle';
+let matrixInput;
+const services = createServer(async (request, response) => {
   if (request.url === '/photon') {
     response.writeHead(photonReady ? 200 : 503);
     return response.end();
   }
   response.setHeader('content-type', 'application/json');
+  if (request.url.startsWith('/matrix/status/')) return response.end(JSON.stringify({ state: matrixState }));
+  if (request.url === '/matrix/start') {
+    if (matrixState === 'running') {
+      response.writeHead(409);
+      return response.end('{}');
+    }
+    let body = '';
+    for await (const chunk of request) body += chunk;
+    matrixInput = JSON.parse(body);
+    matrixState = 'running';
+    response.writeHead(202);
+    return response.end(JSON.stringify({ state: matrixState }));
+  }
   if (request.url.startsWith('/geometry/status/')) return response.end(JSON.stringify({ state: geometryState }));
   if (request.url.startsWith('/geometry/start/')) {
     if (geometryState === 'running') {
@@ -101,13 +116,46 @@ test('reviews remain isolated and reject reports for different input', async () 
   assert.equal((await fetch(`${baseUrl}/api/versions/not-a-version/review`)).status, 404);
 });
 
-test('matrix calculation placeholder rejects unknown versions and reports it is not implemented', async () => {
+test('matrix calculation rejects unknown versions and incomplete or stale reviews', async () => {
   const request = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
   assert.equal((await fetch(`${baseUrl}/api/versions/invalid/matrix-calculation`, request)).status, 404);
   assert.equal((await fetch(`${baseUrl}/api/versions/20000101T0000000000000Z/matrix-calculation`, request)).status, 404);
   const response = await fetch(`${baseUrl}/api/versions/${firstVersion}/matrix-calculation`, request);
-  assert.equal(response.status, 501);
-  assert.equal((await response.json()).detail, 'Matrixberekening is nog niet beschikbaar.');
+  assert.equal(response.status, 409);
+  assert.equal((await fetch(`${baseUrl}/api/versions/${secondVersion}/matrix-calculation`, request)).status, 409);
+});
+
+test('matrix endpoints start a validated snapshot and flag outdated output', async () => {
+  const version = (await (await upload(csv)).json()).id;
+  const report = {
+    createdAtUtc: '2026-01-01T00:00:00Z',
+    inputSha256: createHash('sha256').update(csv).digest('hex'),
+    totalRecords: 1,
+    results: [{ csvRecordNumber: 2, status: 'valid', latitude: 50, longitude: 3,
+      candidates: [{ candidateId: 'test', geometryIsValid: true, latitude: 50, longitude: 3 }] }]
+  };
+  await writeFile(`/source/address-check-${version}.json`, JSON.stringify(report));
+  const url = `${baseUrl}/api/versions/${version}/matrix-calculation`;
+  const post = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
+  assert.equal((await (await fetch(url)).json()).state, 'idle');
+  assert.equal((await fetch(url, post)).status, 202);
+  assert.deepEqual(matrixInput.locations, [{ csvRecordNumber: 2, latitude: 50, longitude: 3 }]);
+  assert.equal((await (await fetch(url)).json()).state, 'running');
+  assert.equal((await fetch(url, post)).status, 409);
+  matrixState = 'completed';
+  assert.equal((await (await fetch(url)).json()).state, 'stale');
+  const fingerprint = createHash('sha256').update(JSON.stringify(matrixInput.locations)).digest('hex').toUpperCase();
+  await writeFile(`/source/matrix-${version}.json`, JSON.stringify({ metadata: {
+    reviewFingerprint: matrixInput.reviewFingerprint, reviewUpdatedAtUtc: matrixInput.reviewUpdatedAtUtc,
+    locationFingerprint: fingerprint
+  } }));
+  assert.equal((await (await fetch(url)).json()).state, 'completed');
+  assert.equal((await fetch(`${baseUrl}/api/versions/${version}/start-location`, {
+    method: 'PUT', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ label: 'Test', latitude: 50, longitude: 3 })
+  })).status, 200);
+  assert.equal((await (await fetch(url)).json()).state, 'stale');
+  matrixState = 'idle';
 });
 
 test('route calculation placeholder rejects unknown versions and reports it is not implemented', async () => {

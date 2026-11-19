@@ -228,6 +228,28 @@ services:
       - ALL
     restart: unless-stopped
 
+  matrix-worker:
+    image: jdc-route-planner-routeplanner-api
+    command: ["--matrix-worker"]
+    environment:
+      Matrix__OutputDirectory: /output
+      Matrix__ValhallaUrl: http://valhalla:8002/
+      Matrix__ApiUrl: http://routeplanner-api:8080/
+    volumes:
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /output
+    expose:
+      - "8082"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+
   routeplanner-api:
     build:
       context: .
@@ -251,6 +273,7 @@ services:
       - "8080"
     depends_on:
       - address-check-broker
+      - matrix-worker
     networks:
       - default
       - orchestration

@@ -43,6 +43,11 @@ if ($LASTEXITCODE -ne 0) {
     throw 'The local geocoding review stack did not start healthy.'
 }
 
+& docker @composeArguments up --no-build --pull never --detach valhalla
+if ($LASTEXITCODE -ne 0) {
+    throw 'Could not start Valhalla for matrix calculation.'
+}
+
 & docker @composeArguments up --no-build --pull never --no-start --no-deps check-addresses extract-osm-geometry
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not prepare the address-check container.'

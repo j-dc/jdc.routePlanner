@@ -4,6 +4,12 @@ using System.Security.Cryptography;
 using Microsoft.AspNetCore.Mvc;
 using RoutePlanner.Api;
 
+if (args.Length == 1 && args[0] == "--matrix-worker")
+{
+    await MatrixWorker.RunAsync();
+    return 0;
+}
+
 if (args.Length == 1 && args[0] == "--address-check-broker")
 {
     await AddressCheckBroker.RunAsync();
@@ -41,6 +47,7 @@ var reviewPath = builder.Configuration["Review:ReviewFilePath"] ?? "/review/addr
 var photonApiBaseUrl = builder.Configuration["Review:PhotonApiBaseUrl"] ?? "http://photon:2322/api/";
 var brokerUrl = builder.Configuration["AddressCheck:BrokerUrl"] ?? "http://address-check-broker:8081/";
 var photonStatusUrl = builder.Configuration["AddressCheck:PhotonStatusUrl"] ?? "http://photon:2322/status";
+var matrixWorkerUrl = builder.Configuration["Matrix:WorkerUrl"] ?? "http://matrix-worker:8082/";
 builder.Services.AddSingleton(new HttpClient { Timeout = TimeSpan.FromSeconds(15) });
 
 var app = builder.Build();
@@ -165,16 +172,92 @@ app.MapGet("/api/versions/{version}", (string version) =>
         ? Results.Ok(new { id = version })
         : Results.NotFound());
 
-app.MapPost("/api/versions/{version}/matrix-calculation", (string version) =>
+app.MapGet("/api/versions/{version}/matrix-calculation", async (string version, HttpClient client, CancellationToken cancellationToken) =>
 {
     if (!InputCsvStore.IsVersion(version) || !File.Exists(InputCsvStore.InputPath(inputCsvPath, version)))
         return Results.NotFound();
-    return Results.Problem("Matrixberekening is nog niet beschikbaar.", statusCode: StatusCodes.Status501NotImplemented);
+    try
+    {
+        using var response = await client.GetAsync(new Uri(new Uri(matrixWorkerUrl), $"status/{version}"), cancellationToken);
+        if (!response.IsSuccessStatusCode) return Results.Problem("De matrixstatus is niet beschikbaar.", statusCode: 503);
+        var status = await response.Content.ReadFromJsonAsync<MatrixStatus>(cancellationToken);
+        if (status?.State == "completed")
+        {
+            try
+            {
+                var input = MatrixWorker.CreateRequest(version, await GetReviewStore(version)!.GetAsync(cancellationToken),
+                    await GetSettingsStore(version)!.GetAsync(cancellationToken));
+                var matrixPath = MatrixWorker.MatrixPath(Path.GetDirectoryName(Path.GetFullPath(reportPath))!, version);
+                await using var stream = File.OpenRead(matrixPath);
+                using var matrix = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                var metadata = matrix.RootElement.GetProperty("metadata");
+                if (metadata.GetProperty("reviewFingerprint").GetString() != input.ReviewFingerprint ||
+                    metadata.GetProperty("reviewUpdatedAtUtc").GetDateTimeOffset() != input.ReviewUpdatedAtUtc ||
+                    metadata.GetProperty("locationFingerprint").GetString() != MatrixWorker.LocationFingerprint(input.Locations))
+                    status = new MatrixStatus("stale", "De review of startlocatie is gewijzigd; bereken de matrix opnieuw.");
+            }
+            catch (Exception exception) when (exception is FileNotFoundException or InvalidDataException or ArgumentException or JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
+            {
+                status = new MatrixStatus("stale", "De matrix is niet meer geldig; controleer de review en bereken opnieuw.");
+            }
+        }
+        return status is null ? Results.Problem("De matrixstatus is ongeldig.", statusCode: 502) : Results.Ok(status);
+    }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException or JsonException or IOException or UnauthorizedAccessException)
+    {
+        return Results.Problem("De matrixstatus is niet beschikbaar.", statusCode: 503);
+    }
+})
+.WithName("GetMatrixStatus")
+.WithSummary("Bekijk de status van de matrixberekening")
+.Produces<MatrixStatus>()
+.ProducesProblem(StatusCodes.Status503ServiceUnavailable)
+.Produces(StatusCodes.Status404NotFound);
+
+app.MapPost("/api/versions/{version}/matrix-calculation", async (string version, HttpRequest request, HttpClient client, CancellationToken cancellationToken) =>
+{
+    var review = GetReviewStore(version);
+    var settings = GetSettingsStore(version);
+    if (review is null || settings is null) return Results.NotFound();
+    if (!request.HasJsonContentType() || (request.Headers.Origin.Count > 0 && request.Headers.Origin.ToString() != "http://routing.localtest.me"))
+        return Results.Problem("Invalid request origin or content type.", statusCode: 403);
+    try
+    {
+        var input = MatrixWorker.CreateRequest(version, await review.GetAsync(cancellationToken), await settings.GetAsync(cancellationToken));
+        using var response = await client.PostAsJsonAsync(new Uri(new Uri(matrixWorkerUrl), "start"), input, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            return Results.Conflict(new { detail = "Er loopt al een matrixberekening." });
+        if (!response.IsSuccessStatusCode)
+            return Results.Problem("De matrixberekening of Valhalla is niet beschikbaar.", statusCode: 503);
+        return Results.Accepted($"/api/versions/{version}/matrix-calculation", new MatrixStatus("running"));
+    }
+    catch (FileNotFoundException)
+    {
+        return Results.Problem("De adrescontrole of review ontbreekt.", statusCode: 404);
+    }
+    catch (InvalidDataException exception)
+    {
+        return Results.Problem(exception.Message, statusCode: 409);
+    }
+    catch (ArgumentException)
+    {
+        return Results.Problem("De startlocatie is ongeldig.", statusCode: 409);
+    }
+    catch (JsonException)
+    {
+        return Results.Problem("De review of instellingen bevatten ongeldige JSON.", statusCode: 409);
+    }
+    catch (Exception exception) when (exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException)
+    {
+        return Results.Problem("De matrixberekening of Valhalla is niet beschikbaar.", statusCode: 503);
+    }
 })
 .WithName("CalculateMatrix")
 .WithSummary("Start matrixberekening voor een planningsversie")
-.WithDescription("Placeholder: matrixberekening is nog niet geïmplementeerd.")
-.ProducesProblem(StatusCodes.Status501NotImplemented)
+.WithDescription("Start een asynchrone Valhalla-matrixberekening voor de bevestigde leveringen.")
+.Produces<MatrixStatus>(StatusCodes.Status202Accepted)
+.ProducesProblem(StatusCodes.Status409Conflict)
+.ProducesProblem(StatusCodes.Status503ServiceUnavailable)
 .Produces(StatusCodes.Status404NotFound);
 
 app.MapPost("/api/versions/{version}/route-calculation", (string version) =>

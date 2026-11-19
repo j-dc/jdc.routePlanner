@@ -29,7 +29,7 @@ if ($LASTEXITCODE -ne 0) {
     throw "Docker Compose configuration validation failed for '$ComposeFile'."
 }
 
-if (-not $PSCmdlet.ShouldProcess('Photon, review API, review website, and Traefik', 'Start existing images without building, pulling, or waiting for healthchecks')) {
+if (-not $PSCmdlet.ShouldProcess('Photon, Valhalla, matrix worker, review API, review website, and Traefik', 'Start existing images without building, pulling, or waiting for healthchecks')) {
     return
 }
 
@@ -38,7 +38,7 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Docker daemon is unavailable.'
 }
 
-$services = @('photon', 'traefik', 'routeplanner-ui', 'routeplanner-api')
+$services = @('photon', 'valhalla', 'traefik', 'routeplanner-ui', 'routeplanner-api')
 & docker @composeArguments up --no-build --pull never --remove-orphans --detach @services
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not start the services. Run .\scripts\setup.ps1 to build the required images first.'
