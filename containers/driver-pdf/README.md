@@ -8,8 +8,8 @@ docker build -f containers\driver-pdf\Dockerfile -t driver-pdf:local .
 ```
 
 Run the image on an isolated application network with a private writable output
-mount at `/output`, writable by UID/GID 10001. No OSM, input or review
-mount is needed. The service runs as UID/GID 10001, listens on port 8084 and
+mount at `/output`, writable by UID/GID 1654. No OSM, input or review
+mount is needed. The service runs as UID/GID 1654, listens on port 8084 and
 should not be exposed publicly. Restrict its network access to the trusted
 routeplanner API. Configure `DRIVER_PDF_API_URL` (default
 `http://routeplanner-api:8080`) and `DRIVER_PDF_OUTPUT_DIR` (default `/output`).
@@ -52,6 +52,21 @@ Their HTTPS links are intended to open the corresponding app on mobile devices
 that support universal links, or the map service in a browser. Opening a link
 contacts the selected third-party navigation service, which may receive the
 destination coordinates.
+Each PDF starts with the driver's total package count, address count, estimated
+distance and estimated duration, followed by deliveries in stop order. Distance
+is rounded to 0.1 km; duration includes driving, service and reload time and is
+rounded up to whole minutes.
+At the top, sequential Google Maps route links cover the complete driver's
+itinerary, including the depot between trips and after the last trip. Each link
+ends where the next begins and has at most three intermediate waypoints, the
+documented limit for mobile browsers. The route is split across these links to
+stay within mobile waypoint limits and keep each URL short.
+Google Maps may show a route preview
+instead of starting navigation, and some products do not support waypoints.
+Google Maps chooses its own roads; these links do not reproduce the Valhalla
+route geometry. Opening a link sends its included coordinates to Google.
+The PDF reader and device decide whether a link opens in a new window, browser
+tab or maps app; the PDF cannot enforce this.
 
 To run focused tests with synthetic data (the working tree must be writable
 for short-lived test fixtures), after building the image:

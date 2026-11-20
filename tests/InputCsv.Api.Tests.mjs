@@ -131,6 +131,28 @@ test('CSV upload creates distinct timestamped versions and rejects invalid input
   assert.equal(await readFile(`/input/ritten-${firstVersion}.csv`, 'utf8'), csv);
 });
 
+test('settings and start location can be saved before any output exists', async () => {
+  const headers = { 'content-type': 'application/json' };
+  for (const first of ['setting', 'location']) {
+    const version = (await (await upload(csv)).json()).id;
+    const root = `${baseUrl}/api/versions/${version}`;
+    const setting = () => fetch(`${root}/settings/nmbDrivers`, {
+      method: 'PUT', headers, body: JSON.stringify({ value: '2' })
+    });
+    const location = () => fetch(`${root}/start-location`, {
+      method: 'PUT', headers, body: JSON.stringify({ label: 'Depot', latitude: 50, longitude: 3 })
+    });
+    const operations = first === 'setting' ? [setting, location] : [location, setting];
+    for (const operation of operations) assert.equal((await operation()).status, 200);
+    const saved = await (await fetch(`${root}/settings`)).json();
+    assert.equal(saved.settings.nmbDrivers, '2');
+    assert.equal(saved.startLocation.label, 'Depot');
+    assert.equal(saved.startLocation.latitude, 50);
+    assert.equal(saved.startLocation.longitude, 3);
+    assert.equal(JSON.parse(await readVersionFile(version, 'settings.json')).Settings.nmbDrivers, '2');
+  }
+});
+
 test('reviews remain isolated and reject reports for different input', async () => {
   const report = {
     createdAtUtc: '2026-01-01T00:00:00Z',

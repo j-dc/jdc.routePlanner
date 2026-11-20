@@ -128,14 +128,31 @@ public static class MatrixWorker
         try
         {
             var count = request.Locations.Count;
-            var distances = Enumerable.Range(0, count).Select(_ => new uint[count]).ToArray();
-            var durations = Enumerable.Range(0, count).Select(_ => new uint[count]).ToArray();
-            for (var sourceOffset = 0; sourceOffset < count; sourceOffset += BatchSize)
+            var uniqueLocations = new List<MatrixLocation>();
+            var uniqueLocationIndices = new Dictionary<(double Latitude, double Longitude), int>();
+            var locationIndices = new int[count];
+            for (var index = 0; index < count; index++)
             {
-                var sources = request.Locations.Skip(sourceOffset).Take(BatchSize).ToArray();
-                for (var targetOffset = 0; targetOffset < count; targetOffset += BatchSize)
+                var location = request.Locations[index];
+                var key = (location.Latitude, location.Longitude);
+                if (!uniqueLocationIndices.TryGetValue(key, out var uniqueIndex))
                 {
-                    var targets = request.Locations.Skip(targetOffset).Take(BatchSize).ToArray();
+                    uniqueIndex = uniqueLocations.Count;
+                    uniqueLocationIndices.Add(key, uniqueIndex);
+                    uniqueLocations.Add(location);
+                }
+                locationIndices[index] = uniqueIndex;
+            }
+
+            var uniqueCount = uniqueLocations.Count;
+            var uniqueDistances = Enumerable.Range(0, uniqueCount).Select(_ => new uint[uniqueCount]).ToArray();
+            var uniqueDurations = Enumerable.Range(0, uniqueCount).Select(_ => new uint[uniqueCount]).ToArray();
+            for (var sourceOffset = 0; sourceOffset < uniqueCount; sourceOffset += BatchSize)
+            {
+                var sources = uniqueLocations.Skip(sourceOffset).Take(BatchSize).ToArray();
+                for (var targetOffset = 0; targetOffset < uniqueCount; targetOffset += BatchSize)
+                {
+                    var targets = uniqueLocations.Skip(targetOffset).Take(BatchSize).ToArray();
                     var payload = new
                     {
                         sources = sources.Select(location => new { lat = location.Latitude, lon = location.Longitude }),
@@ -161,10 +178,22 @@ public static class MatrixWorker
                             var cell = row[j];
                             if (cell.GetProperty("from_index").GetInt32() != i || cell.GetProperty("to_index").GetInt32() != j)
                                 throw new InvalidDataException("Valhalla gaf ongeldige matrixindexen terug.");
-                            durations[sourceOffset + i][targetOffset + j] = GetValue(cell, "time", 1);
-                            distances[sourceOffset + i][targetOffset + j] = GetValue(cell, "distance", 1000);
+                            uniqueDurations[sourceOffset + i][targetOffset + j] = GetValue(cell, "time", 1);
+                            uniqueDistances[sourceOffset + i][targetOffset + j] = GetValue(cell, "distance", 1000);
                         }
                     }
+                }
+            }
+            var durations = new uint[count][];
+            var distances = new uint[count][];
+            for (var sourceIndex = 0; sourceIndex < count; sourceIndex++)
+            {
+                durations[sourceIndex] = new uint[count];
+                distances[sourceIndex] = new uint[count];
+                for (var targetIndex = 0; targetIndex < count; targetIndex++)
+                {
+                    durations[sourceIndex][targetIndex] = uniqueDurations[locationIndices[sourceIndex]][locationIndices[targetIndex]];
+                    distances[sourceIndex][targetIndex] = uniqueDistances[locationIndices[sourceIndex]][locationIndices[targetIndex]];
                 }
             }
             var currentReview = await api.GetFromJsonAsync<ReviewDocument>($"api/versions/{request.Version}/review", cancellationToken)

@@ -162,6 +162,7 @@ public sealed partial class SettingsStore(string path)
 
     private async Task WriteAsync(SettingsDocument document, CancellationToken cancellationToken)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {

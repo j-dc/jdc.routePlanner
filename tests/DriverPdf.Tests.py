@@ -9,6 +9,7 @@ import threading
 import time
 import unittest
 from unittest import mock
+from urllib.parse import parse_qs, urlsplit
 import zlib
 
 from reportlab.pdfgen.canvas import Canvas
@@ -34,7 +35,7 @@ def snapshot():
              "remarkLower": "Tweede noot"}
             for number in (2, 3)
         ],
-        "routes": [{"driver": 1, "trips": [
+        "routes": [{"driver": 1, "distanceMeters": 12345, "totalDurationSeconds": 3601, "trips": [
             {"stops": [{"csvRecordNumber": 2, "matrixIndex": 1, "packageCount": 2},
                        {"csvRecordNumber": 3, "matrixIndex": 2, "packageCount": 3}]}]}],
     }
@@ -71,9 +72,13 @@ class DriverPdfTests(unittest.TestCase):
                              for stream in streams)
         self.assertLess(content.index(b"Test 2"), content.index(b"Test 3"))
         for expected in (b"Chauffeur 1", b"Teststraat 1", b"Google maps", b"Apple maps",
+                         b"Totaal aantal pakketten: 5", b"Aantal adressen: 2",
+                         b"Geschatte afstand: 12,3 km", b"Geschatte tijd: 61 minuten",
                          b"2 Pakketten", b"3 Pakketten",
                          b"Bellen", b"Opmerking:"):
             self.assertIn(expected, content)
+        self.assertLess(content.index(b"Chauffeur 1"), content.index(b"Totaal aantal pakketten: 5"))
+        self.assertLess(content.index(b"Totaal aantal pakketten: 5"), content.index(b"Aantal adressen: 2"))
         self.assertEqual(content.count(b"EIND"), 2)
         self.assertNotIn(b"Tweede noot", content)
         self.assertNotIn(b"(opmerking:)", content)
@@ -108,6 +113,128 @@ class DriverPdfTests(unittest.TestCase):
         self.assertLess(abs(packages_y - stop_y), 15)
         self.assertEqual((packages_x, packages_x), (bellen_x, remark_x))
 
+    def test_route_links_cover_all_trips_in_order_with_mobile_waypoint_limit(self):
+        data = snapshot()
+        data["locations"] = [data["locations"][0]]
+        data["deliveries"] = []
+        stops = []
+        for number in range(1, 7):
+            data["locations"].append({"csvRecordNumber": number + 1,
+                                      "latitude": 50 + number / 1000, "longitude": 4.0})
+            data["deliveries"].append({"csvRecordNumber": number + 1, "name": f"Test {number}",
+                                       "street": "Teststraat", "houseNumber": "1", "postcode": "1000",
+                                       "municipality": "Test", "packageCount": 1, "bellen": "",
+                                       "remarkUpper": ""})
+            stops.append({"csvRecordNumber": number + 1, "matrixIndex": number, "packageCount": 1})
+        data["routes"][0]["trips"] = [{"stops": stops[:4]}, {"stops": stops[4:]}]
+        _, points = renderer.validate(data)
+        links = renderer._route_navigation_links(data["routes"][0], points)
+        self.assertEqual(len(links), 2)
+        segments = []
+        for _, url in links:
+            params = parse_qs(urlsplit(url).query)
+            self.assertEqual(params["api"], ["1"])
+            self.assertEqual(params["travelmode"], ["driving"])
+            self.assertEqual(params["dir_action"], ["navigate"])
+            waypoints = params.get("waypoints", [""])[0].split("|") if "waypoints" in params else []
+            self.assertLessEqual(len(waypoints), 3)
+            segments.append([params["origin"][0], *waypoints, params["destination"][0]])
+        self.assertEqual(segments, [
+            ["50.0,4.0", "50.001,4.0", "50.002,4.0", "50.003,4.0", "50.004,4.0"],
+            ["50.004,4.0", "50.0,4.0", "50.005,4.0", "50.006,4.0", "50.0,4.0"],
+        ])
+        self.assertIn("Depot na rit 1", links[1][0])
+        output = self.root / "output"
+        output.mkdir()
+        annotations = []
+        original_link = Canvas.linkURL
+
+        def record_link(canvas, url, rect, *args, **kwargs):
+            annotations.append((url, rect, kwargs.get("relative", 0)))
+            return original_link(canvas, url, rect, *args, **kwargs)
+
+        with mock.patch.object(Canvas, "linkURL", autospec=True, side_effect=record_link):
+            renderer.render(data, output)
+        pdf = (output / "chauffeur-1.pdf").read_bytes()
+        for _, url in links:
+            self.assertIn(url.encode(), pdf)
+        full_url = renderer._google_maps_url(renderer._route_itinerary(data["routes"][0], points))
+        self.assertNotIn(full_url.encode(), pdf)
+        for _, url in links:
+            matches = [(rect, relative) for target, rect, relative in annotations if target == url]
+            self.assertEqual(len(matches), 1)
+            rect, relative = matches[0]
+            self.assertEqual(relative, 1)
+            self.assertEqual(rect[:2], (0, 0))
+            self.assertGreater(rect[2], 400)
+            self.assertGreater(rect[3], 28)
+        streams = re.findall(rb"/ASCII85Decode\s*/FlateDecode.*?stream\r?\n(.*?)endstream", pdf, re.S)
+        content = b"\n".join(zlib.decompress(base64.a85decode(stream.strip(), adobe=True))
+                             for stream in streams)
+        self.assertNotIn(b"Google Maps volledige route", content)
+        self.assertNotIn(b"Google Maps kan bij veel stops of een lange link", content)
+        self.assertLess(content.index(b"Google Maps route deel 1/2"), content.index(b"Rit 1"))
+        self.assertLess(content.index(b"Google Maps route deel 2/2"), content.index(b"Rit 1"))
+
+    def test_long_route_uses_sequential_links_without_full_route_link(self):
+        data = snapshot()
+        data["locations"] = [data["locations"][0]]
+        delivery = data["deliveries"][0]
+        data["deliveries"] = []
+        stops = []
+        for number in range(1, 121):
+            data["locations"].append({"csvRecordNumber": number + 1,
+                                      "latitude": 50 + number / 100000, "longitude": 4.123456})
+            data["deliveries"].append(dict(delivery, csvRecordNumber=number + 1, remarkUpper=""))
+            stops.append({"csvRecordNumber": number + 1, "matrixIndex": number,
+                          "packageCount": delivery["packageCount"]})
+        data["routes"][0]["trips"] = [{"stops": stops}]
+        _, points = renderer.validate(data)
+        full_url = renderer._google_maps_url(renderer._route_itinerary(data["routes"][0], points))
+        self.assertGreater(len(full_url), 2048)
+        links = renderer._route_navigation_links(data["routes"][0], points)
+        self.assertTrue(all(len(url) <= 2048 for _, url in links))
+        self.assertTrue(all(len(parse_qs(urlsplit(url).query).get("waypoints", [""])[0].split("|")) <= 3
+                            for _, url in links))
+        for number in range(1, 121):
+            self.assertTrue(any(f"Stop {number}" in labels for labels, _ in links))
+        output = self.root / "output"
+        output.mkdir()
+        renderer.render(data, output)
+        pdf = (output / "chauffeur-1.pdf").read_bytes()
+        self.assertNotIn(full_url.encode(), pdf)
+        for _, url in links:
+            self.assertIn(url.encode(), pdf)
+
+    def test_single_stop_route_link_returns_to_depot(self):
+        data = snapshot()
+        data["locations"].pop()
+        data["deliveries"].pop()
+        data["routes"][0]["trips"][0]["stops"].pop()
+        _, points = renderer.validate(data)
+        links = renderer._route_navigation_links(data["routes"][0], points)
+        self.assertEqual(len(links), 1)
+        params = parse_qs(urlsplit(links[0][1]).query)
+        self.assertEqual(params["origin"], ["50.0,4.0"])
+        self.assertEqual(params["destination"], ["50.0,4.0"])
+        self.assertEqual(params["waypoints"], ["50.001,4.001"])
+
+    def test_last_segment_can_be_direct_return_to_depot(self):
+        data = snapshot()
+        for number in (4, 5):
+            data["locations"].append({"csvRecordNumber": number, "latitude": 50 + number / 1000, "longitude": 4.0})
+            delivery = dict(data["deliveries"][0], csvRecordNumber=number)
+            data["deliveries"].append(delivery)
+            data["routes"][0]["trips"][0]["stops"].append(
+                {"csvRecordNumber": number, "matrixIndex": number - 1, "packageCount": delivery["packageCount"]})
+        _, points = renderer.validate(data)
+        links = renderer._route_navigation_links(data["routes"][0], points)
+        self.assertEqual(len(links), 2)
+        last = parse_qs(urlsplit(links[-1][1]).query)
+        self.assertEqual(last["origin"], ["50.005,4.0"])
+        self.assertEqual(last["destination"], ["50.0,4.0"])
+        self.assertNotIn("waypoints", last)
+
     def test_horizontal_line_between_deliveries_in_different_trips(self):
         data = snapshot()
         for delivery in data["deliveries"]:
@@ -125,9 +252,10 @@ class DriverPdfTests(unittest.TestCase):
 
         with mock.patch.object(Canvas, "line", autospec=True, side_effect=record_line):
             renderer.render(data, output)
-        self.assertEqual(len(lines), 1)
-        self.assertEqual(lines[0][1], lines[0][3])
-        self.assertGreater(lines[0][2], lines[0][0])
+        separators = [line for line in lines if line[2] - line[0] > 400]
+        self.assertEqual(len(separators), 1)
+        self.assertEqual(separators[0][1], separators[0][3])
+        self.assertGreater(separators[0][2], separators[0][0])
 
     def test_rejects_bad_snapshots(self):
         output = self.root / "output"
@@ -152,7 +280,10 @@ class DriverPdfTests(unittest.TestCase):
         data["locations"][2]["latitude"] = 50.002
         data["locations"][2]["longitude"] = 4.002
         second_stop = data["routes"][0]["trips"][0]["stops"].pop()
-        data["routes"].append({"driver": 2, "trips": [{"stops": [second_stop]}]})
+        data["routes"][0]["distanceMeters"] = 1000
+        data["routes"][0]["totalDurationSeconds"] = 600
+        data["routes"].append({"driver": 2, "distanceMeters": 2000, "totalDurationSeconds": 1200,
+                               "trips": [{"stops": [second_stop]}]})
         output = self.root / "output"
         output.mkdir()
         renderer.render(data, output)

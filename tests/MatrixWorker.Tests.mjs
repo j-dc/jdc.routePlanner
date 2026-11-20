@@ -48,7 +48,7 @@ test('matrix worker batches, preserves indices, rejects failures and detects int
       await new Promise(resolve => { release = resolve; });
     }
     const rows = data.sources.map((_, i) => data.targets.map((_, j) => ({
-      from_index: i, to_index: j, time: invalid ? null : 12.6, distance: 0.123
+      from_index: i, to_index: j, time: invalid ? null : 12.6 + i, distance: 0.123 + j
     })));
     res.end(JSON.stringify({ sources_to_targets: rows }));
   });
@@ -105,10 +105,16 @@ test('matrix worker batches, preserves indices, rejects failures and detects int
     const output = JSON.parse(await readFile(join(directory, 'legacy', 'matrix.json'), 'utf8'));
     assert.deepEqual(output.metadata.locations, locations);
     assert.equal(output.matrices.car.distances.length, 22);
-    assert.ok(output.matrices.car.distances.every(row => row.length === 22 && row.every(value => value === 123)));
-    assert.ok(output.matrices.car.durations.every(row => row.every(value => value === 13)));
+    assert.ok(output.matrices.car.distances.every(row => row.length === 22));
+    assert.ok(output.matrices.car.durations.every(row => row.every(Number.isInteger)));
+    assert.deepEqual(output.matrices.car.distances[1], output.matrices.car.distances[2]);
+    assert.deepEqual(output.matrices.car.durations[1], output.matrices.car.durations[2]);
+    assert.deepEqual(output.matrices.car.distances.map(row => row[1]), output.matrices.car.distances.map(row => row[2]));
+    assert.deepEqual(output.matrices.car.durations.map(row => row[1]), output.matrices.car.durations.map(row => row[2]));
     assert.deepEqual(output.matrices.car.costs, output.matrices.car.distances);
     assert.equal(batches.length, 4);
+    assert.ok(batches.every(batch => [batch.sources, batch.targets].every(locations =>
+      new Set(locations.map(location => JSON.stringify([location.lat, location.lon]))).size === locations.length)));
     assert.ok(batches.every(batch => batch.sources.length <= 20 && batch.targets.length <= 20 &&
       batch.costing === 'auto' && batch.costing_options.auto.shortest === true));
     invalid = true;

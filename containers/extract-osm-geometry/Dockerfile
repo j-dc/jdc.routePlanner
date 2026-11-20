@@ -20,8 +20,8 @@ RUN sed -i 's|http://|https://|g' /etc/apt/sources.list.d/ubuntu.sources \
     && apt-get purge -y curl \
     && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/* \
-    && groupadd --system --gid 10001 geometry \
-    && useradd --system --uid 10001 --gid geometry --no-create-home geometry
+    && groupadd --system --gid 1654 geometry \
+    && useradd --system --uid 1654 --gid geometry --no-create-home geometry
 
 ENV HOME=/tmp \
     POWERSHELL_TELEMETRY_OPTOUT=1 \
@@ -29,5 +29,5 @@ ENV HOME=/tmp \
 
 WORKDIR /app
 COPY containers/extract-osm-geometry/entrypoint.ps1 /app/entrypoint.ps1
-USER 10001:10001
+USER 1654:1654
 ENTRYPOINT ["pwsh", "-NoLogo", "-NoProfile", "-File", "/app/entrypoint.ps1"]
