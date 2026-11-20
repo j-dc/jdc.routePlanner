@@ -1,5 +1,7 @@
 import base64
+import hashlib
 import http.client
+from io import BytesIO
 import json
 from pathlib import Path
 import re
@@ -13,6 +15,7 @@ from urllib.parse import parse_qs, urlsplit
 import zlib
 
 from reportlab.pdfgen.canvas import Canvas
+from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "containers" / "driver-pdf"))
@@ -41,6 +44,26 @@ def snapshot():
     }
 
 
+def maps_for(data):
+    maps = {}
+    for route in data["routes"]:
+        buffer = BytesIO()
+        Image.new("RGB", (20, 10), (route["driver"], 50, 100)).save(buffer, format="PNG")
+        maps[route["driver"]] = buffer.getvalue()
+    return maps
+
+
+def write_maps(directory, data, raw):
+    directory.mkdir()
+    maps = maps_for(data)
+    for driver, image in maps.items():
+        (directory / f"chauffeur-{driver}.png").write_bytes(image)
+    manifest = {"snapshotSha256": hashlib.sha256(raw).hexdigest(),
+                "maps": {str(driver): hashlib.sha256(image).hexdigest() for driver, image in maps.items()}}
+    (directory / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    return maps
+
+
 class DriverPdfTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="driver-pdf-test-", dir=Path.cwd())
@@ -49,11 +72,11 @@ class DriverPdfTests(unittest.TestCase):
     def tearDown(self):
         self.directory.cleanup()
 
-    def test_pdf_contains_ordered_deliveries_without_maps(self):
+    def test_pdf_contains_map_between_summary_and_route_links(self):
         output = self.root / "output"
         output.mkdir()
         with self.assertLogs("driver_pdf", level="INFO") as logs:
-            renderer.render(snapshot(), output)
+            renderer.render(snapshot(), output, maps_for(snapshot()))
         messages = "\n".join(logs.output)
         for expected in ("PDF-invoer geldig", "Chauffeur 1: PDF voltooid"):
             self.assertIn(expected, messages)
@@ -66,7 +89,7 @@ class DriverPdfTests(unittest.TestCase):
         self.assertEqual(pdf.count(b"https://www.google.com/maps/dir/?api=1&destination=50.001%2C4.001&travelmode=driving"), 2)
         self.assertEqual(pdf.count(b"https://maps.apple.com/?daddr=50.001%2C4.001"), 2)
         self.assertNotIn(b"geo:", pdf)
-        self.assertNotIn(b"/Subtype /Image", pdf)
+        self.assertIn(b"/Subtype /Image", pdf)
         streams = re.findall(rb"/ASCII85Decode\s*/FlateDecode.*?stream\r?\n(.*?)endstream", pdf, re.S)
         content = b"\n".join(zlib.decompress(base64.a85decode(stream.strip(), adobe=True))
                              for stream in streams)
@@ -79,10 +102,13 @@ class DriverPdfTests(unittest.TestCase):
             self.assertIn(expected, content)
         self.assertLess(content.index(b"Chauffeur 1"), content.index(b"Totaal aantal pakketten: 5"))
         self.assertLess(content.index(b"Totaal aantal pakketten: 5"), content.index(b"Aantal adressen: 2"))
+        self.assertLess(content.index(b"Geschatte tijd: 61 minuten"), content.index(b"/FormXob."))
+        self.assertLess(content.index(b"/FormXob."), content.index(b"Google Maps route deel"))
+        self.assertIn(b"OpenStreetMap contributors", content)
+        self.assertIn(b"https://www.openstreetmap.org/copyright", pdf)
         self.assertEqual(content.count(b"EIND"), 2)
         self.assertNotIn(b"Tweede noot", content)
         self.assertNotIn(b"(opmerking:)", content)
-        self.assertNotIn(b"OpenStreetMap", content)
 
     def test_delivery_columns_are_side_by_side(self):
         data = snapshot()
@@ -90,7 +116,7 @@ class DriverPdfTests(unittest.TestCase):
             delivery["remarkUpper"] = "Korte notitie"
         output = self.root / "output"
         output.mkdir()
-        renderer.render(data, output)
+        renderer.render(data, output, maps_for(data))
         pdf = (output / "chauffeur-1.pdf").read_bytes()
         streams = re.findall(rb"/ASCII85Decode\s*/FlateDecode.*?stream\r?\n(.*?)endstream", pdf, re.S)
         content = b"\n".join(zlib.decompress(base64.a85decode(stream.strip(), adobe=True))
@@ -154,7 +180,7 @@ class DriverPdfTests(unittest.TestCase):
             return original_link(canvas, url, rect, *args, **kwargs)
 
         with mock.patch.object(Canvas, "linkURL", autospec=True, side_effect=record_link):
-            renderer.render(data, output)
+            renderer.render(data, output, maps_for(data))
         pdf = (output / "chauffeur-1.pdf").read_bytes()
         for _, url in links:
             self.assertIn(url.encode(), pdf)
@@ -200,7 +226,7 @@ class DriverPdfTests(unittest.TestCase):
             self.assertTrue(any(f"Stop {number}" in labels for labels, _ in links))
         output = self.root / "output"
         output.mkdir()
-        renderer.render(data, output)
+        renderer.render(data, output, maps_for(data))
         pdf = (output / "chauffeur-1.pdf").read_bytes()
         self.assertNotIn(full_url.encode(), pdf)
         for _, url in links:
@@ -251,7 +277,7 @@ class DriverPdfTests(unittest.TestCase):
             return original_line(canvas, x1, y1, x2, y2)
 
         with mock.patch.object(Canvas, "line", autospec=True, side_effect=record_line):
-            renderer.render(data, output)
+            renderer.render(data, output, maps_for(data))
         separators = [line for line in lines if line[2] - line[0] > 400]
         self.assertEqual(len(separators), 1)
         self.assertEqual(separators[0][1], separators[0][3])
@@ -272,7 +298,7 @@ class DriverPdfTests(unittest.TestCase):
         cases.append(bad)
         for bad in cases:
             with self.subTest(bad=bad), self.assertRaises(renderer.InvalidSnapshot):
-                renderer.render(bad, output)
+                renderer.render(bad, output, maps_for(bad))
         self.assertEqual(list(output.iterdir()), [])
 
     def test_driver_files_keep_their_own_stops_and_navigation_links(self):
@@ -286,7 +312,7 @@ class DriverPdfTests(unittest.TestCase):
                                "trips": [{"stops": [second_stop]}]})
         output = self.root / "output"
         output.mkdir()
-        renderer.render(data, output)
+        renderer.render(data, output, maps_for(data))
         first = (output / "chauffeur-1.pdf").read_bytes()
         second = (output / "chauffeur-2.pdf").read_bytes()
         self.assertIn(b"destination=50.001%2C4.001", first)
@@ -297,6 +323,69 @@ class DriverPdfTests(unittest.TestCase):
         self.assertNotIn(b"destination=50.001%2C4.001", second)
         self.assertIn(b"daddr=50.002%2C4.002", second)
         self.assertNotIn(b"daddr=50.001%2C4.001", second)
+        for pdf, driver in ((first, 1), (second, 2)):
+            streams = re.findall(rb"/ASCII85Decode\s*/FlateDecode.*?stream\r?\n(.*?)endstream", pdf, re.S)
+            decoded = [zlib.decompress(base64.a85decode(stream.strip(), adobe=True)) for stream in streams]
+            self.assertIn(bytes((driver, 50, 100)) * 200, decoded)
+            self.assertNotIn(bytes((3 - driver, 50, 100)) * 200, decoded)
+
+    def test_map_manifest_rejects_missing_stale_or_corrupt_maps(self):
+        data = snapshot()
+        raw = json.dumps(data).encode()
+        directory = self.root / "route-maps"
+        maps = write_maps(directory, data, raw)
+        self.assertEqual(server.load_route_maps(data, raw, directory), maps)
+        with self.assertRaises(server.InvalidRouteMaps):
+            server.load_route_maps(data, raw + b" ", directory)
+        (directory / "chauffeur-1.png").write_bytes(b"not a PNG")
+        with self.assertRaises(server.InvalidRouteMaps):
+            server.load_route_maps(data, raw, directory)
+        manifest_path = directory / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["maps"]["1"] = hashlib.sha256(b"not a PNG").hexdigest()
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+        with self.assertRaises(server.InvalidRouteMaps):
+            server.load_route_maps(data, raw, directory)
+        (directory / "chauffeur-1.png").unlink()
+        with self.assertRaises(server.InvalidRouteMaps):
+            server.load_route_maps(data, raw, directory)
+        (directory / "manifest.json").unlink()
+        with self.assertRaises(server.InvalidRouteMaps):
+            server.load_route_maps(data, raw, directory)
+
+    def test_worker_publishes_pdf_with_current_map(self):
+        data = snapshot()
+        raw = json.dumps(data).encode()
+        directory = self.root / "legacy"
+        directory.mkdir()
+        write_maps(directory / "route-maps", data, raw)
+
+        def fake_api(version, endpoint):
+            return b'{"state":"completed"}' if endpoint == "route-calculation" else raw
+
+        with mock.patch.object(server, "ROOT", self.root), mock.patch.object(server, "api_get", fake_api):
+            server.generate("legacy")
+            self.assertEqual(server.read_status("legacy")["state"], "completed")
+        pdf = (directory / "driver-pdf" / "chauffeur-1.pdf").read_bytes()
+        self.assertIn(b"/Subtype /Image", pdf)
+
+    def test_missing_maps_fail_without_replacing_previous_pdfs(self):
+        directory = self.root / "legacy"
+        output = directory / "driver-pdf"
+        output.mkdir(parents=True)
+        (output / "chauffeur-1.pdf").write_bytes(b"previous")
+        raw = json.dumps(snapshot()).encode()
+
+        def fake_api(version, endpoint):
+            return b'{"state":"completed"}' if endpoint == "route-calculation" else raw
+
+        with mock.patch.object(server, "ROOT", self.root), mock.patch.object(server, "api_get", fake_api):
+            server.generate("legacy")
+            status = server.read_status("legacy")
+        self.assertEqual(status["state"], "failed")
+        self.assertIn("Render de routekaarten opnieuw", status["message"])
+        self.assertEqual((output / "chauffeur-1.pdf").read_bytes(), b"previous")
+        self.assertFalse(any(path.name.startswith(".driver-pdf-staging-") for path in directory.iterdir()))
 
     def test_server_lifecycle_and_freshness(self):
         root = self.root
@@ -312,12 +401,13 @@ class DriverPdfTests(unittest.TestCase):
                 return initial + (b" " if changed[0] else b"")
             self.fail(f"Unexpected endpoint: {endpoint}")
 
-        def fake_render(data, directory):
+        def fake_render(data, directory, maps):
             started.set()
             self.assertTrue(proceed.wait(5))
             (directory / "driver.pdf").write_bytes(b"synthetic")
 
         with mock.patch.object(server, "ROOT", root), mock.patch.object(server, "api_get", fake_api), \
+             mock.patch.object(server, "load_route_maps", return_value=maps_for(snapshot())), \
              mock.patch.object(server, "render", fake_render):
             server.ACTIVE = None
             httpd = server.ThreadingHTTPServer(("127.0.0.1", 0), server.Handler)

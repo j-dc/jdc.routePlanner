@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
 import { extname, join } from 'node:path';
@@ -83,8 +84,13 @@ test('browser job publishes one map per driver and preserves previous output if 
   try {
     const first = await runWorker();
     assert.equal(first.code, 0, first.output);
-    assert.deepEqual((await readdir('/output/legacy/route-maps')).sort(), ['chauffeur-1.png', 'chauffeur-2.png']);
+    assert.deepEqual((await readdir('/output/legacy/route-maps')).sort(), ['chauffeur-1.png', 'chauffeur-2.png', 'manifest.json']);
     const original = await readFile('/output/legacy/route-maps/chauffeur-1.png');
+    const manifest = JSON.parse(await readFile('/output/legacy/route-maps/manifest.json', 'utf8'));
+    const hash = data => createHash('sha256').update(data).digest('hex');
+    assert.equal(manifest.snapshotSha256, hash(JSON.stringify(snapshot)));
+    assert.equal(manifest.maps['1'], hash(original));
+    assert.equal(manifest.maps['2'], hash(await readFile('/output/legacy/route-maps/chauffeur-2.png')));
     assert.equal(original.subarray(0, 8).toString('hex'), '89504e470d0a1a0a');
     assert.notDeepEqual(original, await readFile('/output/legacy/route-maps/chauffeur-2.png'));
     snapshotReads = 0;

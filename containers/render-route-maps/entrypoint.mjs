@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { chromium } from 'playwright-core';
 
@@ -63,6 +63,7 @@ try {
     .sort((a, b) => a - b);
   const expectedDrivers = data.routes.map(route => route.driver).sort((a, b) => a - b);
   if (JSON.stringify(actualDrivers) !== JSON.stringify(expectedDrivers)) throw new Error('De routes op de kaart komen niet overeen met de planning.');
+  const maps = {};
   for (const driver of expectedDrivers) {
     phase = `kaart voor chauffeur ${driver} renderen`;
     tileFailed = false;
@@ -75,11 +76,13 @@ try {
     if (await attributionButton.getAttribute('aria-expanded') === 'false') await attributionButton.click();
     if (!(await page.locator('.map .ol-attribution').innerText()).includes('OpenStreetMap'))
       throw new Error('De OpenStreetMap-attributie ontbreekt.');
-    await page.locator('.map').screenshot({ path: join(staging, `chauffeur-${driver}.png`), timeout: 60000 });
+    const image = await page.locator('.map').screenshot({ path: join(staging, `chauffeur-${driver}.png`), timeout: 60000 });
+    maps[driver] = digest(image);
     console.log(`Routekaart voor chauffeur ${driver} gerenderd.`);
   }
   phase = 'planning controleren';
   if (digest(initial) !== digest(await snapshot())) throw new Error('De planning is gewijzigd tijdens het renderen.');
+  await writeFile(join(staging, 'manifest.json'), JSON.stringify({ snapshotSha256: digest(initial), maps }), { mode: 0o600 });
   await browser.close();
   browser = undefined;
   phase = 'routekaarten publiceren';

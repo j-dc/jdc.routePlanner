@@ -3,6 +3,7 @@
 import logging
 import math
 import os
+from io import BytesIO
 from pathlib import Path
 import time
 from urllib.parse import urlencode
@@ -12,9 +13,10 @@ from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
+from PIL import Image as PillowImage
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.platypus import Flowable, HRFlowable, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+from reportlab.platypus import Flowable, HRFlowable, Image, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 logger = logging.getLogger("driver_pdf")
 
@@ -155,15 +157,17 @@ class RouteButton(Flowable):
         self.canv.linkURL(self.url, (0, 0, self.width, self.height), relative=1)
 
 
-def render(snapshot, output_dir):
+def render(snapshot, output_dir, maps):
     """Write one PDF per driver to an existing, empty staging directory."""
     logger.info("PDF-invoer valideren.")
     deliveries, points = validate(snapshot)
+    _require(set(maps) == {route["driver"] for route in snapshot["routes"]}, "Missing driver maps.")
     logger.info("PDF-invoer geldig: %d chauffeurs, %d leveringen.", len(snapshot["routes"]), len(deliveries))
     output = Path(output_dir)
     _require(output.is_dir() and not any(output.iterdir()), "Output must be an empty staging directory.")
     _register_fonts()
     regular = ParagraphStyle("regular", fontName="DejaVu", fontSize=10, leading=14, splitLongWords=True)
+    attribution = ParagraphStyle("attribution", parent=regular, fontSize=8, leading=10)
     heading = ParagraphStyle("heading", parent=regular, fontName="DejaVuBold", fontSize=17, leading=22)
     summary_count = ParagraphStyle("summary_count", parent=regular, fontName="DejaVuBold", fontSize=20, leading=25)
     stop_heading = ParagraphStyle("stop", parent=regular, fontName="DejaVuBold", fontSize=12, leading=16)
@@ -187,7 +191,13 @@ def render(snapshot, output_dir):
                       f"Geschatte tijd: {estimated_minutes} minuten", regular),
             Spacer(1, 4 * mm),
         ]
-        story.append(Spacer(1, 2 * mm))
+        image_data = BytesIO(maps[driver])
+        with PillowImage.open(image_data) as image:
+            width, height = image.size
+        scale = min(165 * mm / width, 100 * mm / height)
+        story.append(Image(image_data, width=width * scale, height=height * scale, hAlign="LEFT"))
+        story.append(Paragraph('Kaartgegevens &copy; <link href="https://www.openstreetmap.org/copyright">OpenStreetMap contributors</link>', attribution))
+        story.append(Spacer(1, 4 * mm))
         links = _route_navigation_links(route, points)
         for index, (labels, url) in enumerate(links, 1):
             story.append(RouteButton(f"Google Maps route deel {index}/{len(links)}: {labels}", url, route_button))

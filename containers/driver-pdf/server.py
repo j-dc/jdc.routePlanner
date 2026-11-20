@@ -4,6 +4,7 @@ import hashlib
 import json
 import logging
 import os
+from io import BytesIO
 from pathlib import Path
 import re
 import shutil
@@ -12,7 +13,8 @@ import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from renderer import render
+from PIL import Image, UnidentifiedImageError
+from renderer import render, validate
 
 API_URL = os.environ.get("DRIVER_PDF_API_URL", "http://routeplanner-api:8080").rstrip("/")
 OUTPUT_ROOT = Path(os.environ.get("DRIVER_PDF_OUTPUT_DIR", "/output"))
@@ -20,6 +22,35 @@ ROOT = OUTPUT_ROOT
 logger = logging.getLogger("driver_pdf")
 LOCK = threading.Lock()
 ACTIVE = None
+
+
+class InvalidRouteMaps(ValueError):
+    pass
+
+
+def load_route_maps(snapshot, snapshot_bytes, directory):
+    validate(snapshot)
+    try:
+        manifest = json.loads((directory / "manifest.json").read_text(encoding="utf-8"))
+        drivers = {str(route["driver"]) for route in snapshot["routes"]}
+        if (not isinstance(manifest, dict)
+                or manifest.get("snapshotSha256") != hashlib.sha256(snapshot_bytes).hexdigest()
+                or not isinstance(manifest.get("maps"), dict)
+                or set(manifest["maps"]) != drivers):
+            raise InvalidRouteMaps()
+        maps = {}
+        for driver in drivers:
+            data = (directory / f"chauffeur-{driver}.png").read_bytes()
+            if hashlib.sha256(data).hexdigest() != manifest["maps"][driver]:
+                raise InvalidRouteMaps()
+            with Image.open(BytesIO(data)) as image:
+                if image.format != "PNG":
+                    raise InvalidRouteMaps()
+                image.load()
+            maps[int(driver)] = data
+        return maps
+    except (OSError, ValueError, TypeError, UnidentifiedImageError) as error:
+        raise InvalidRouteMaps("Routekaarten ontbreken, zijn ongeldig of verouderd. Render de routekaarten opnieuw.") from error
 
 
 def valid_version(value):
@@ -90,9 +121,11 @@ def generate(version):
         snapshot = json.loads(initial)
         if snapshot.get("version") != version:
             raise ValueError("Version mismatch.")
+        phase = "routekaarten controleren"
+        maps = load_route_maps(snapshot, initial, version_directory / "route-maps")
         phase = "PDF's maken"
         logger.info("PDF-invoer opgehaald; PDF's maken.")
-        render(snapshot, staging)
+        render(snapshot, staging, maps)
         phase = "actualiteit controleren"
         logger.info("Controleren of route en invoer nog actueel zijn.")
         if hashlib.sha256(initial).digest() != hashlib.sha256(api_get(version, "driver-pdf-data")).digest():
@@ -119,7 +152,8 @@ def generate(version):
         except OSError as cleanup_error:
             logger.error("Tijdelijke PDF-bestanden konden niet worden verwijderd (%s).", type(cleanup_error).__name__)
         try:
-            write_status(version, {"state": "failed", "message": "PDF-generatie mislukt of gegevens zijn gewijzigd."})
+            message = str(error) if isinstance(error, InvalidRouteMaps) else "PDF-generatie mislukt of gegevens zijn gewijzigd."
+            write_status(version, {"state": "failed", "message": message})
         except OSError as status_error:
             logger.error("PDF-foutstatus kon niet worden opgeslagen (%s).", type(status_error).__name__)
     finally:
