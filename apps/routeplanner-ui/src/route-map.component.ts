@@ -4,6 +4,7 @@ import { AfterViewInit, Component, ElementRef, Input, OnChanges, OnDestroy, Simp
 import Feature from 'ol/Feature';
 import Map from 'ol/Map';
 import View from 'ol/View';
+import { createEmpty, extend, isEmpty } from 'ol/extent';
 import GeoJSON from 'ol/format/GeoJSON';
 import Point from 'ol/geom/Point';
 import TileLayer from 'ol/layer/Tile';
@@ -43,7 +44,7 @@ export interface MapLocation {
     <section class="map-workspace" aria-labelledby="map-title">
       <header class="map-heading">
         <div><p class="map-eyebrow">Routeplanning</p><h2 id="map-title">Leverlocaties</h2></div>
-        <span class="location-count">{{ locations.length }} op kaart</span>
+        <span class="location-count">{{ visibleLocations.length }} op kaart</span>
       </header>
       <p class="map-warning" *ngIf="missingCount" role="alert">{{ missingCount }} leveringen hebben geen bruikbare bevestigde coördinaten.</p>
       <p class="map-warning" *ngIf="routeError" role="alert">{{ routeError }} <button type="button" (click)="loadRoutes()">Opnieuw proberen</button></p>
@@ -55,9 +56,12 @@ export interface MapLocation {
         <span *ngIf="!geometryRunning && !geometryBusy && !geometryError && missingContours">Voor {{ missingContours }} leveringen is geen lokale contour beschikbaar.</span>
         <button *ngIf="!geometryRunning && !geometryBusy" type="button" (click)="refreshGeometry()" [disabled]="geometryStarting">{{ geometryStarting ? 'Starten...' : 'Herbereken en laad de lokale geometrie' }}</button>
       </div>
-      <ul class="route-legend" *ngIf="routeLegend.length" aria-label="Routekleuren">
-        <li *ngFor="let route of routeLegend"><span class="route-swatch" [style.background-color]="route.color"></span>Chauffeur {{ route.driver }}</li>
-      </ul>
+      <div class="route-legend" *ngIf="routeLegend.length" role="group" aria-label="Routes op de kaart">
+        <button type="button" [attr.aria-pressed]="selectedDriver === null" (click)="selectRoute(null)">Alle routes</button>
+        <button type="button" *ngFor="let route of routeLegend" [attr.aria-pressed]="selectedDriver === route.driver" (click)="selectRoute(route.driver)">
+          <span class="route-swatch" [style.background-color]="route.color"></span>Chauffeur {{ route.driver }}
+        </button>
+      </div>
       <p class="map-empty" *ngIf="routeLegend.length > 16">Vanaf chauffeur 17 worden kleuren herhaald.</p>
       <div class="map-body">
         <div class="map-container">
@@ -101,8 +105,10 @@ export interface MapLocation {
     .geometry-notice button { min-height: 34px; padding: 6px 12px; border: 1px solid var(--forest); border-radius: 5px; background: var(--forest); color: white; font-weight: 700; }
     .geometry-notice button:disabled { cursor: not-allowed; opacity: 0.55; }
     .map-empty { color: var(--muted); font-size: 13px; }
-    .route-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; padding: 0; list-style: none; font-size: 13px; }
-    .route-legend li { display: flex; align-items: center; gap: 6px; }
+    .route-legend { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 14px; }
+    .route-legend button { display: inline-flex; align-items: center; gap: 6px; min-height: 34px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 5px; background: var(--surface); color: var(--ink); cursor: pointer; font-size: 13px; }
+    .route-legend button[aria-pressed="true"] { border-color: var(--forest); box-shadow: inset 0 0 0 1px var(--forest); font-weight: 700; }
+    .route-legend button:focus-visible { outline: 3px solid #eaa35e; outline-offset: 2px; }
     .route-swatch { display: inline-block; width: 20px; height: 5px; }
     @media (max-width: 680px) {
       .map-body { grid-template-columns: 1fr; }
@@ -129,6 +135,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   routeError = '';
   routeLoading = false;
   routeLegend: { driver: number; color: string }[] = [];
+  selectedDriver: number | null = null;
   private readonly source = new VectorSource<Feature<Point>>();
   private readonly clusterSource = new Cluster({ distance: 36, source: this.source });
   private readonly markerLayer = new VectorLayer({ source: this.source });
@@ -173,7 +180,9 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
         }),
       }), new VectorLayer({
         source: this.routeSource,
-        style: feature => new Style({ stroke: new Stroke({ color: this.routeColor(feature.get('driver') as number), width: 4 }) }),
+        style: feature => this.selectedDriver === null || feature.get('driver') === this.selectedDriver
+          ? new Style({ stroke: new Stroke({ color: this.routeColor(feature.get('driver') as number), width: 4 }) })
+          : undefined,
       }), this.markerLayer, this.clusterLayer, new VectorLayer({
         source: this.startSource,
         zIndex: 10,
@@ -240,6 +249,8 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
 
   private clearRoutes(): void {
     this.routeSubscription?.unsubscribe();
+    const wasFiltered = this.selectedDriver !== null;
+    this.selectedDriver = null;
     this.routeSource.clear();
     this.routeDrivers.clear();
     this.routeLegend = [];
@@ -247,6 +258,18 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.routeLoading = false;
     this.source.changed();
     this.clusterSource.changed();
+    if (wasFiltered) {
+      this.updateLocations();
+      this.updateGeometry();
+    }
+  }
+
+  selectRoute(driver: number | null): void {
+    if (this.selectedDriver === driver) return;
+    this.selectedDriver = driver;
+    this.updateLocations();
+    this.updateGeometry();
+    this.routeSource.changed();
   }
 
   loadRoutes(): void {
@@ -286,14 +309,29 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   private updateLocations(): void {
     this.selectedLocations = [];
     this.source.clear();
-    this.source.addFeatures(this.locations.map(location => {
+    const locations = this.visibleLocations;
+    this.source.addFeatures(locations.map(location => {
       const feature = new Feature(new Point(fromLonLat([location.longitude, location.latitude])));
       feature.set('location', location);
       return feature;
     }));
-    if (this.locations.length) {
-      this.map?.getView().fit(this.source.getExtent(), { padding: [48, 48, 48, 48], maxZoom: 15 });
+    const extent = createEmpty();
+    if (locations.length) extend(extent, this.source.getExtent());
+    if (this.selectedDriver !== null) {
+      for (const feature of this.routeSource.getFeatures()) {
+        if (feature.get('driver') === this.selectedDriver && feature.getGeometry())
+          extend(extent, feature.getGeometry()!.getExtent());
+      }
+      if (this.startSource.getFeatures().length) extend(extent, this.startSource.getExtent());
     }
+    if (!isEmpty(extent)) {
+      this.map?.getView().fit(extent, { padding: [48, 48, 48, 48], maxZoom: 15 });
+    }
+  }
+
+  get visibleLocations(): MapLocation[] {
+    return this.selectedDriver === null ? this.locations
+      : this.locations.filter(location => this.routeDrivers.get(location.recordNumber) === this.selectedDriver);
   }
 
   private loadGeometry(): void {
@@ -376,7 +414,8 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     if (!this.geometryData) return;
     const allFeatures = new GeoJSON().readFeatures(this.geometryData, { featureProjection: 'EPSG:3857' });
     this.startSource.addFeatures(allFeatures.filter(feature => feature.get('isStartLocation') === true && feature.getGeometry()?.getType() === 'Point'));
-    const selectedIds = new Set(this.locations.map(location => location.candidateId).filter((id): id is string => !!id));
+    const locations = this.visibleLocations;
+    const selectedIds = new Set(locations.map(location => location.candidateId).filter((id): id is string => !!id));
     const features = allFeatures
       .filter(feature => selectedIds.has(String(feature.getId())) && feature.getGeometry()?.getType() !== 'Point');
     const foundIds = new Set(features.map(feature => String(feature.getId())));
@@ -384,7 +423,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
       const location = feature.get('location') as MapLocation;
       feature.set('missingContour', !location.candidateId || !foundIds.has(location.candidateId));
     });
-    this.missingContours = this.locations.filter(location => !location.candidateId || !foundIds.has(location.candidateId)).length;
+    this.missingContours = locations.filter(location => !location.candidateId || !foundIds.has(location.candidateId)).length;
     this.geometrySource.addFeatures(features);
   }
 }
