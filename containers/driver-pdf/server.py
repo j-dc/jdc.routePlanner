@@ -16,7 +16,7 @@ from renderer import render
 
 API_URL = os.environ.get("DRIVER_PDF_API_URL", "http://routeplanner-api:8080").rstrip("/")
 OUTPUT_ROOT = Path(os.environ.get("DRIVER_PDF_OUTPUT_DIR", "/output"))
-ROOT = OUTPUT_ROOT / "driver-pdfs"
+ROOT = OUTPUT_ROOT
 logger = logging.getLogger("driver_pdf")
 LOCK = threading.Lock()
 ACTIVE = None
@@ -41,14 +41,14 @@ def write_status(version, status):
     try:
         with temporary.open("x", encoding="utf-8") as file:
             json.dump(status, file)
-        os.replace(temporary, directory / "status.json")
+        os.replace(temporary, directory / "driver-pdf-status.json")
     finally:
         temporary.unlink(missing_ok=True)
 
 
 def read_status(version):
     try:
-        with (ROOT / version / "status.json").open(encoding="utf-8") as file:
+        with (ROOT / version / "driver-pdf-status.json").open(encoding="utf-8") as file:
             status = json.load(file)
         if status.get("state") == "running" and ACTIVE != version:
             status = {"state": "failed", "message": "De PDF-generatie is onderbroken."}
@@ -73,7 +73,10 @@ def route_current(version):
 
 def generate(version):
     global ACTIVE
-    staging = ROOT / version / (".staging-" + uuid.uuid4().hex)
+    version_directory = ROOT / version
+    staging = version_directory / (".driver-pdf-staging-" + uuid.uuid4().hex)
+    output_directory = version_directory / "driver-pdf"
+    backup = version_directory / (".driver-pdf-old-" + uuid.uuid4().hex)
     phase = "voorbereiding"
     try:
         logger.info("PDF-generatie gestart voor versie %s.", version)
@@ -96,9 +99,17 @@ def generate(version):
             raise RuntimeError("Snapshot changed.")
         route_current(version)
         phase = "PDF's publiceren"
-        generation = "generation-" + uuid.uuid4().hex
-        os.rename(staging, ROOT / version / generation)
-        write_status(version, {"state": "completed", "outputDirectory": f"driver-pdfs/{version}/{generation}"})
+        if output_directory.exists():
+            os.rename(output_directory, backup)
+        try:
+            os.rename(staging, output_directory)
+        except Exception:
+            if backup.exists():
+                os.rename(backup, output_directory)
+            raise
+        if backup.exists():
+            shutil.rmtree(backup)
+        write_status(version, {"state": "completed", "outputDirectory": f"{version}/driver-pdf"})
         logger.info("PDF-generatie voltooid voor versie %s.", version)
     except Exception as error:
         logger.error("PDF-generatie mislukt tijdens %s (%s).", phase, type(error).__name__)

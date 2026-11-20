@@ -20,9 +20,11 @@ routeplanner API. Configure `DRIVER_PDF_API_URL` (default
 another job is active. Status `state` is `idle`, `running`, `busy`,
 `completed` or `failed`, with an optional `message` and, on completion,
 `outputDirectory` relative to the output root. A restart reports interrupted
-running jobs as failed when their status is requested. Completed generations
-are immutable and retained; deletion and retention are an operator's
-responsibility. A failed job removes only its own staging directory.
+running jobs as failed when their status is requested. The current PDFs are
+published directly in `<output root>/<version>/driver-pdf/`; a successful run
+replaces that version's previous PDF directory. Status is stored as
+`<output root>/<version>/driver-pdf-status.json`. A failed job removes only
+its own staging directory and leaves the previously published PDFs intact.
 
 The API must provide `driver-pdf-data` and
 `route-calculation` under `/api/versions/{version}/`. The first is a stable,
@@ -45,9 +47,11 @@ by `matrixIndex`. Delivery text fields are strings, missing notes use empty
 strings, and package counts are positive integers. PDFs do not contain maps,
 and no geocoder, map or route-geometry request is made. PDF files are written
 atomically, and failures raise exceptions.
-The `geo:latitude,longitude` link requires a mobile app that handles `geo:`
-URIs; its behavior depends on that app. The worker does not automatically
-contact third-party navigation or map services.
+Each delivery has separate Google Maps and Apple Maps directions buttons.
+Their HTTPS links are intended to open the corresponding app on mobile devices
+that support universal links, or the map service in a browser. Opening a link
+contacts the selected third-party navigation service, which may receive the
+destination coordinates.
 
 To run focused tests with synthetic data (the working tree must be writable
 for short-lived test fixtures), after building the image:

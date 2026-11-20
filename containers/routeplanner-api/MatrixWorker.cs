@@ -231,10 +231,10 @@ public static class MatrixWorker
         Convert.ToHexString(SHA256.HashData(JsonSerializer.SerializeToUtf8Bytes(locations, JsonOptions)));
 
     public static string MatrixPath(string directory, string version) =>
-        Path.Combine(directory, version == "legacy" ? "matrix.json" : $"matrix-{version}.json");
+        OutputPaths.FilePath(directory, version, "matrix.json");
 
     private static string StatusPath(string directory, string version) =>
-        Path.Combine(directory, version == "legacy" ? "matrix-status.json" : $"matrix-status-{version}.json");
+        OutputPaths.FilePath(directory, version, "matrix-status.json");
 
     private static async Task<MatrixStatus> ReadStatusAsync(string directory, string version, CancellationToken cancellationToken)
     {
@@ -250,6 +250,7 @@ public static class MatrixWorker
 
     private static async Task WriteAtomicallyAsync<T>(string path, T value, CancellationToken cancellationToken)
     {
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         var temporaryPath = $"{path}.{Guid.NewGuid():N}.tmp";
         try
         {

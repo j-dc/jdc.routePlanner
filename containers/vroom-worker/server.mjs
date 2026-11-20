@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { getRouteGeometry } from './geometry.mjs';
@@ -8,10 +8,11 @@ const outputDirectory = process.env.ROUTE_OUTPUT_DIR || '/output';
 const valhallaUrl = process.env.ROUTE_VALHALLA_URL || 'http://valhalla:8002/';
 let runningVersion = null;
 const validVersion = version => /^(legacy|\d{8}T\d{13}Z)$/.test(version);
-const pathFor = version => join(outputDirectory, version === 'legacy' ? 'routes-status.json' : `routes-status-${version}.json`);
+const pathFor = version => join(outputDirectory, version, 'routes-status.json');
 
 async function writeStatus(version, status) {
   const path = pathFor(version), temporary = `${path}.${process.pid}.tmp`;
+  await mkdir(join(outputDirectory, version), { recursive: true });
   try {
     await writeFile(temporary, JSON.stringify(status), { flag: 'wx' });
     await rename(temporary, path);

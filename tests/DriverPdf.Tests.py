@@ -62,13 +62,16 @@ class DriverPdfTests(unittest.TestCase):
         self.assertEqual([p.name for p in files], ["chauffeur-1.pdf"])
         pdf = files[0].read_bytes()
         self.assertTrue(pdf.startswith(b"%PDF-"))
-        self.assertEqual(pdf.count(b"geo:50.001,4.001"), 2)
+        self.assertEqual(pdf.count(b"https://www.google.com/maps/dir/?api=1&destination=50.001%2C4.001&travelmode=driving"), 2)
+        self.assertEqual(pdf.count(b"https://maps.apple.com/?daddr=50.001%2C4.001"), 2)
+        self.assertNotIn(b"geo:", pdf)
         self.assertNotIn(b"/Subtype /Image", pdf)
         streams = re.findall(rb"/ASCII85Decode\s*/FlateDecode.*?stream\r?\n(.*?)endstream", pdf, re.S)
         content = b"\n".join(zlib.decompress(base64.a85decode(stream.strip(), adobe=True))
                              for stream in streams)
         self.assertLess(content.index(b"Test 2"), content.index(b"Test 3"))
-        for expected in (b"Chauffeur 1", b"Teststraat 1", b"2 Pakketten", b"3 Pakketten",
+        for expected in (b"Chauffeur 1", b"Teststraat 1", b"Google maps", b"Apple maps",
+                         b"2 Pakketten", b"3 Pakketten",
                          b"Bellen", b"Opmerking:"):
             self.assertIn(expected, content)
         self.assertEqual(content.count(b"EIND"), 2)
@@ -144,7 +147,7 @@ class DriverPdfTests(unittest.TestCase):
                 renderer.render(bad, output)
         self.assertEqual(list(output.iterdir()), [])
 
-    def test_driver_files_keep_their_own_stops_and_navigation(self):
+    def test_driver_files_keep_their_own_stops_and_navigation_links(self):
         data = snapshot()
         data["locations"][2]["latitude"] = 50.002
         data["locations"][2]["longitude"] = 4.002
@@ -155,13 +158,17 @@ class DriverPdfTests(unittest.TestCase):
         renderer.render(data, output)
         first = (output / "chauffeur-1.pdf").read_bytes()
         second = (output / "chauffeur-2.pdf").read_bytes()
-        self.assertIn(b"geo:50.001,4.001", first)
-        self.assertNotIn(b"geo:50.002,4.002", first)
-        self.assertIn(b"geo:50.002,4.002", second)
-        self.assertNotIn(b"geo:50.001,4.001", second)
+        self.assertIn(b"destination=50.001%2C4.001", first)
+        self.assertNotIn(b"destination=50.002%2C4.002", first)
+        self.assertIn(b"daddr=50.001%2C4.001", first)
+        self.assertNotIn(b"daddr=50.002%2C4.002", first)
+        self.assertIn(b"destination=50.002%2C4.002", second)
+        self.assertNotIn(b"destination=50.001%2C4.001", second)
+        self.assertIn(b"daddr=50.002%2C4.002", second)
+        self.assertNotIn(b"daddr=50.001%2C4.001", second)
 
     def test_server_lifecycle_and_freshness(self):
-        root = self.root / "driver-pdfs"
+        root = self.root
         initial = json.dumps(snapshot()).encode()
         started = threading.Event()
         proceed = threading.Event()
@@ -203,6 +210,7 @@ class DriverPdfTests(unittest.TestCase):
                 result = request("GET", "/status/legacy")[1]
                 completed = self.root / result["outputDirectory"]
                 self.assertTrue((completed / "driver.pdf").is_file())
+                self.assertEqual(result["outputDirectory"], "legacy/driver-pdf")
                 started.clear()
                 changed[0] = False
                 proceed.clear()
@@ -212,7 +220,7 @@ class DriverPdfTests(unittest.TestCase):
                 proceed.set()
                 self.wait_for_state(request, "failed")
                 self.assertTrue(completed.exists())
-                self.assertFalse(any(p.name.startswith(".staging-") for p in (root / "legacy").iterdir()))
+                self.assertFalse(any(p.name.startswith(".driver-pdf-staging-") for p in (root / "legacy").iterdir()))
                 server.write_status("legacy", {"state": "running"})
                 self.assertEqual(request("GET", "/status/legacy")[1]["state"], "failed")
             finally:
@@ -223,7 +231,7 @@ class DriverPdfTests(unittest.TestCase):
                 server.ACTIVE = None
 
     def test_failure_logs_phase_and_type_without_exception_details(self):
-        root = self.root / "driver-pdfs"
+        root = self.root
         (root / "legacy").mkdir(parents=True)
         with mock.patch.object(server, "ROOT", root), \
              mock.patch.object(server, "api_get", side_effect=ValueError("private address")), \

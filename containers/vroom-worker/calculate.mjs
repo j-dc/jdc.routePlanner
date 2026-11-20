@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFile, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';
 import { balanceRoutes, completeRoutes, createOldGroups, routeCost, serviceTime, splitTrips } from './balance.mjs';
@@ -12,14 +12,15 @@ const { version, driverCount, matrixSha256: expectedHash, inputSha256, capacity,
 const maxDifferenceSeconds = maxDifferenceMinutes * 60;
 const outputDirectory = process.env.ROUTE_OUTPUT_DIR || '/output';
 const apiUrl = process.env.ROUTE_API_URL || 'http://routeplanner-api:8080/';
-const suffix = version === 'legacy' ? '' : `-${version}`;
-const matrixPath = join(outputDirectory, `matrix${suffix}.json`);
-const routePath = join(outputDirectory, `routes${suffix}.json`);
+const versionDirectory = join(outputDirectory, version);
+const matrixPath = join(versionDirectory, 'matrix.json');
+const routePath = join(versionDirectory, 'routes.json');
 const hash = data => createHash('sha256').update(data).digest('hex').toUpperCase();
 
 function fail(message) { throw new Error(message); }
 
 async function calculate() {
+  await mkdir(versionDirectory, { recursive: true });
   const matrixBytes = await readFile(matrixPath);
   if (hash(matrixBytes) !== expectedHash) fail('De matrix is gewijzigd. Bereken de routes opnieuw.');
   const input = JSON.parse(matrixBytes);

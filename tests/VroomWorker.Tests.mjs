@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -140,6 +140,7 @@ test('VROOM charges setup for a delivery at the depot and a later revisit', () =
 
 test('VROOM worker calculates complete round trips and rejects stale or unbalanced input', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'vroom-worker-test-'));
+  await mkdir(join(directory, 'legacy'));
   let driverCount = 2;
   let serviceSeconds = 90;
   let capacity = 60;
@@ -185,7 +186,7 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
   }
   async function start(matrix, requestedDrivers = 2, requestedService = serviceSeconds, counts = null, labels = null) {
     const data = JSON.stringify(matrix);
-    await writeFile(join(directory, 'matrix.json'), data);
+    await writeFile(join(directory, 'legacy', 'matrix.json'), data);
     return fetch(`${base}/start`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ version: 'legacy', driverCount: requestedDrivers, serviceSeconds: requestedService,
@@ -219,7 +220,7 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
     assert.equal((await start(matrix)).status, 409);
     release();
     await until('completed');
-    const output = JSON.parse(await readFile(join(directory, 'routes.json'), 'utf8'));
+    const output = JSON.parse(await readFile(join(directory, 'legacy', 'routes.json'), 'utf8'));
     assert.equal(output.routes.length, 2);
     assert.ok(output.routes.every(route => route.stops.length > 0));
     assert.deepEqual(output.routes.flatMap(route => route.stops.map(stop => stop.csvRecordNumber)).sort((a, b) => a - b),
@@ -275,7 +276,7 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
     capacity = 3;
     assert.equal((await start(matrix, 2, 60, [2, 2, 2, 2, 2, 2], ['A', 'A', 'B', 'A', '', 'B'])).status, 202);
     await until('completed');
-    const multi = JSON.parse(await readFile(join(directory, 'routes.json'), 'utf8'));
+    const multi = JSON.parse(await readFile(join(directory, 'legacy', 'routes.json'), 'utf8'));
     assert.equal(multi.routes.reduce((sum, route) => sum + route.stops.length, 0), 6);
     assert.ok(multi.routes.some(route => route.trips.length > 1));
     for (const route of multi.routes) {
@@ -310,7 +311,7 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
     matrices: { car: { durations: reorderCosts, distances: reorderCosts, costs: reorderCosts } } };
     assert.equal((await start(reorder, 1, 60, [1, 1, 1], ['X', 'X', 'X'])).status, 202);
     await until('completed');
-    const reordered = JSON.parse(await readFile(join(directory, 'routes.json'), 'utf8')).oldRoutePlan.routes[0];
+    const reordered = JSON.parse(await readFile(join(directory, 'legacy', 'routes.json'), 'utf8')).oldRoutePlan.routes[0];
     assert.deepEqual(reordered.stops.map(stop => stop.csvRecordNumber), [2, 4, 3]);
     assert.equal(reordered.distanceMeters, 4);
     driverCount = 2;
@@ -333,7 +334,7 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
     maxDifferenceMinutes = 400;
     assert.equal((await start(unbalanced)).status, 202);
     await until('completed');
-    const relaxed = JSON.parse(await readFile(join(directory, 'routes.json'), 'utf8'));
+    const relaxed = JSON.parse(await readFile(join(directory, 'legacy', 'routes.json'), 'utf8'));
     assert.equal(relaxed.metadata.maxAllowedDifferenceSeconds, 24000);
     assert.ok(relaxed.metadata.actualDifferenceSeconds > 1800 && relaxed.metadata.actualDifferenceSeconds <= 24000);
     maxDifferenceMinutes = 30;
@@ -355,7 +356,7 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
       matrices: { car: { durations: thresholdCosts, distances: thresholdCosts, costs: thresholdCosts } } };
     assert.equal((await start(threshold)).status, 202);
     await until('completed');
-    const thresholdResult = JSON.parse(await readFile(join(directory, 'routes.json'), 'utf8'));
+    const thresholdResult = JSON.parse(await readFile(join(directory, 'legacy', 'routes.json'), 'utf8'));
     assert.ok(Math.max(...thresholdResult.routes.map(route => route.durationSeconds)) -
       Math.min(...thresholdResult.routes.map(route => route.durationSeconds)) > 1800);
     assert.ok(thresholdResult.metadata.actualDifferenceSeconds <= 1800);
@@ -369,14 +370,14 @@ test('VROOM worker calculates complete round trips and rejects stale or unbalanc
       matrices: { car: { durations: manyCosts, distances: manyCosts, costs: manyCosts } } };
     assert.equal((await start(many, 10, 60, Array(400).fill(2))).status, 202);
     await until('completed');
-    const largeResult = JSON.parse(await readFile(join(directory, 'routes.json'), 'utf8'));
+    const largeResult = JSON.parse(await readFile(join(directory, 'legacy', 'routes.json'), 'utf8'));
     assert.equal(largeResult.routes.length, 10);
     assert.equal(new Set(largeResult.routes.flatMap(route => route.stops.map(stop => stop.csvRecordNumber))).size, 400);
     assert.ok(largeResult.routes.every(route => route.stops.length > 0));
     assert.ok(largeResult.routes.flatMap(route => route.trips).length >= 27);
     assert.ok(largeResult.routes.every(route => route.trips.every(trip => trip.packageCount <= 30)));
     assert.ok(largeResult.metadata.actualDifferenceSeconds <= 1800);
-    await writeFile(join(directory, 'routes-status.json'), JSON.stringify({ state: 'running' }));
+    await writeFile(join(directory, 'legacy', 'routes-status.json'), JSON.stringify({ state: 'running' }));
     assert.match((await status()).message, /onderbroken/);
   } finally {
     server.kill();

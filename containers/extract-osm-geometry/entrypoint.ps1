@@ -54,12 +54,11 @@ function Invoke-Osmium {
 
 function Invoke-GeometryExtraction {
     $version = Get-GeometryVersion
-    $suffix = if ($version -eq 'legacy') { '' } else { "-$version" }
-    $reportPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_REPORT_DIR' '/source') "address-check$suffix.json"
-    $outputPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_OUTPUT_DIR' '/output') "osm-geometry$suffix.geojson"
+    $versionDirectory = $version
+    $reportPath = Join-Path (Join-Path (Get-EnvironmentValue 'GEOMETRY_REPORT_DIR' '/source') $versionDirectory) 'address-check.json'
+    $outputPath = Join-Path (Join-Path (Get-EnvironmentValue 'GEOMETRY_OUTPUT_DIR' '/output') $versionDirectory) 'osm-geometry.geojson'
     $osmPath = Get-EnvironmentValue 'OSM_PBF_PATH' '/osm/belgium-latest.osm.pbf'
-    $settingsFileName = if ($version -eq 'legacy') { 'settings.json' } else { "settings-$version.json" }
-    $settingsPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_SETTINGS_DIR' '/source') $settingsFileName
+    $settingsPath = Join-Path (Join-Path (Get-EnvironmentValue 'GEOMETRY_SETTINGS_DIR' '/source') $versionDirectory) 'settings.json'
 
     $reportBytes = [System.IO.File]::ReadAllBytes($reportPath)
     $report = [System.Text.Encoding]::UTF8.GetString($reportBytes) | ConvertFrom-Json -Depth 100
@@ -92,6 +91,7 @@ function Invoke-GeometryExtraction {
         }
     }
 
+    $suffix = if ($version -eq 'legacy') { '' } else { "-$version" }
     $reviewPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_REVIEW_DIR' '/review') "address-review$suffix.json"
     if (Test-Path -LiteralPath $reviewPath -PathType Leaf) {
         $inputPath = Join-Path (Get-EnvironmentValue 'GEOMETRY_INPUT_DIR' '/input') "ritten$suffix.csv"

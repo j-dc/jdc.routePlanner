@@ -31,9 +31,11 @@ function decodeShape(shape) {
 }
 
 export async function getRouteGeometry(version, outputDirectory, valhallaUrl, signal) {
-  const suffix = version === 'legacy' ? '' : `-${version}`;
-  const routeBytes = await readFile(join(outputDirectory, `routes${suffix}.json`));
-  const matrixBytes = await readFile(join(outputDirectory, `matrix${suffix}.json`));
+  const versionDirectory = join(outputDirectory, version);
+  const routePath = join(versionDirectory, 'routes.json');
+  const matrixPath = join(versionDirectory, 'matrix.json');
+  const routeBytes = await readFile(routePath);
+  const matrixBytes = await readFile(matrixPath);
   const routes = JSON.parse(routeBytes);
   const matrix = JSON.parse(matrixBytes);
   const locations = matrix.metadata?.locations;
@@ -92,8 +94,8 @@ export async function getRouteGeometry(version, outputDirectory, valhallaUrl, si
   await Promise.all(Array.from({ length: Math.min(4, requests.length) }, async () => {
     while (next < requests.length) await requests[next++]();
   }));
-  if (digest(await readFile(join(outputDirectory, `routes${suffix}.json`))) !== digest(routeBytes) ||
-      digest(await readFile(join(outputDirectory, `matrix${suffix}.json`))) !== digest(matrixBytes))
+  if (digest(await readFile(routePath)) !== digest(routeBytes) ||
+      digest(await readFile(matrixPath)) !== digest(matrixBytes))
     throw new Error('De routes of matrix zijn gewijzigd.');
   return { type: 'FeatureCollection', features };
 }

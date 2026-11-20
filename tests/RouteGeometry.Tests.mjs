@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -24,6 +24,7 @@ function encodeShape(points) {
 
 test('geometry follows each depot trip and rejects failed or changed inputs', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'route-geometry-'));
+  await mkdir(join(directory, 'legacy'));
   const locations = [
     { csvRecordNumber: null, latitude: 50, longitude: 3 },
     { csvRecordNumber: 2, latitude: 50.01, longitude: 3.01 },
@@ -38,8 +39,8 @@ test('geometry follows each depot trip and rejects failed or changed inputs', as
       { stops: [{ matrixIndex: 2, csvRecordNumber: 3 }, { matrixIndex: 3, csvRecordNumber: 4 }] }
     ] }]
   });
-  await writeFile(join(directory, 'matrix.json'), matrix);
-  await writeFile(join(directory, 'routes.json'), routes);
+  await writeFile(join(directory, 'legacy', 'matrix.json'), matrix);
+  await writeFile(join(directory, 'legacy', 'routes.json'), routes);
   const calls = [];
   let fail = false, change = false;
   const server = createServer(async (request, response) => {
@@ -48,7 +49,7 @@ test('geometry follows each depot trip and rejects failed or changed inputs', as
     const data = JSON.parse(body);
     calls.push(data);
     if (fail) { response.writeHead(503); return response.end(); }
-    if (change) await writeFile(join(directory, 'routes.json'), `${routes} `);
+    if (change) await writeFile(join(directory, 'legacy', 'routes.json'), `${routes} `);
     const points = data.locations.map(location => [location.lat, location.lon]);
     response.setHeader('content-type', 'application/json');
     response.end(JSON.stringify({ trip: { status: 0, legs: [{ shape: encodeShape(points) }] } }));

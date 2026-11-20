@@ -24,15 +24,19 @@ try {
             throw 'The address-check version file is empty.'
         }
     }
-    if (-not [string]::IsNullOrEmpty($version) -and $version -ne 'legacy') {
+    if ([string]::IsNullOrEmpty($version)) {
+        $version = 'legacy'
+    }
+    if ($version -ne 'legacy') {
         $parsedVersion = [datetimeoffset]::MinValue
         if ($version -cnotmatch '^[0-9]{8}T[0-9]{13}Z$' -or
             -not [datetimeoffset]::TryParseExact($version, "yyyyMMdd'T'HHmmssfffffff'Z'", [System.Globalization.CultureInfo]::InvariantCulture, [System.Globalization.DateTimeStyles]::AssumeUniversal, [ref]$parsedVersion)) {
             throw 'The input version must be a valid UTC timestamp.'
         }
         $inputPath = Join-Path ([System.IO.Path]::GetDirectoryName($inputPath)) "ritten-$version.csv"
-        $reportPath = Join-Path ([System.IO.Path]::GetDirectoryName($reportPath)) "address-check-$version.json"
     }
+    $reportDirectory = Join-Path ([System.IO.Path]::GetDirectoryName($reportPath)) $version
+    $reportPath = Join-Path $reportDirectory 'address-check.json'
     if ([string]::IsNullOrWhiteSpace($geocoderBaseUrl)) {
         throw 'GEOCODER_BASE_URL must point to an approved internal Photon-compatible endpoint.'
     }
@@ -173,6 +177,7 @@ try {
         Results = $results.ToArray()
     }
 
+    [void][System.IO.Directory]::CreateDirectory($reportDirectory)
     $reportJson = $report | ConvertTo-Json -Depth 6
     [System.IO.File]::WriteAllText($reportPath, $reportJson, [System.Text.UTF8Encoding]::new($false))
     [Console]::Out.WriteLine('Address check completed: {0} records, {1} valid, {2} problems, {3} geocoder errors.', $results.Count, $validCount, $problemCount, $geocoderErrorCount)

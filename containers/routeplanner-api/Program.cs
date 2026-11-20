@@ -43,6 +43,8 @@ builder.Services.AddCors(options => options.AddPolicy("routeplanner-ui", policy 
         .AllowAnyMethod()));
 
 var reportPath = builder.Configuration["Review:SourceReportPath"] ?? "/source/address-check.json";
+var outputDirectory = Path.GetDirectoryName(Path.GetFullPath(reportPath))!;
+string GetVersionFilePath(string version, string fileName) => OutputPaths.FilePath(outputDirectory, version, fileName);
 var inputCsvPath = builder.Configuration["Review:InputCsvPath"] ?? "/input/ritten.csv";
 var reviewPath = builder.Configuration["Review:ReviewFilePath"] ?? "/review/address-review.json";
 var photonApiBaseUrl = builder.Configuration["Review:PhotonApiBaseUrl"] ?? "http://photon:2322/api/";
@@ -60,7 +62,7 @@ ReviewStore? GetReviewStore(string version)
 {
     if (!InputCsvStore.IsVersion(version) || !File.Exists(InputCsvStore.InputPath(inputCsvPath, version))) return null;
     return reviewStores.GetOrAdd(version, key => new ReviewStore(
-        key == "legacy" ? reportPath : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(reportPath))!, $"address-check-{key}.json"),
+        GetVersionFilePath(key, "address-check.json"),
         InputCsvStore.InputPath(inputCsvPath, key),
         key == "legacy" ? reviewPath : Path.Combine(Path.GetDirectoryName(Path.GetFullPath(reviewPath))!, $"address-review-{key}.json"),
         app.Services.GetRequiredService<HttpClient>(),
@@ -71,9 +73,7 @@ var settingsStores = new ConcurrentDictionary<string, SettingsStore>(StringCompa
 SettingsStore? GetSettingsStore(string version)
 {
     if (!InputCsvStore.IsVersion(version) || !File.Exists(InputCsvStore.InputPath(inputCsvPath, version))) return null;
-    return settingsStores.GetOrAdd(version, key => new SettingsStore(Path.Combine(
-        Path.GetDirectoryName(Path.GetFullPath(reportPath))!,
-        key == "legacy" ? "settings.json" : $"settings-{key}.json")));
+    return settingsStores.GetOrAdd(version, key => new SettingsStore(GetVersionFilePath(key, "settings.json")));
 }
 
 bool MatrixMatches(JsonElement metadata, MatrixRequest input)
@@ -138,7 +138,7 @@ async Task<RouteCalculationInput> GetRouteInputAsync(string version, Cancellatio
     var matrixStatus = await response.Content.ReadFromJsonAsync<MatrixStatus>(cancellationToken);
     if (matrixStatus?.State != "completed")
         throw new InvalidDataException("Een actuele, volledig berekende matrix is vereist.");
-    var path = MatrixWorker.MatrixPath(Path.GetDirectoryName(Path.GetFullPath(reportPath))!, version);
+    var path = MatrixWorker.MatrixPath(outputDirectory, version);
     var bytes = await File.ReadAllBytesAsync(path, cancellationToken);
     using var matrix = JsonDocument.Parse(bytes);
     if (!MatrixMatches(matrix.RootElement.GetProperty("metadata"), input))
@@ -157,8 +157,7 @@ async Task<MatrixStatus> GetRouteStatusAsync(string version, HttpClient client, 
     try
     {
         var input = await GetRouteInputAsync(version, cancellationToken);
-        var path = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(reportPath))!,
-            version == "legacy" ? "routes.json" : $"routes-{version}.json");
+        var path = GetVersionFilePath(version, "routes.json");
         await using var stream = File.OpenRead(path);
         using var routes = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
         var metadata = routes.RootElement.GetProperty("metadata");
@@ -192,9 +191,8 @@ async Task<MatrixStatus> GetRouteStatusAsync(string version, HttpClient client, 
 
 async Task<JsonElement> ReadOsmGeometryAsync(string version, CancellationToken cancellationToken)
 {
-    var directory = Path.GetDirectoryName(Path.GetFullPath(reportPath))!;
-    var selectedReport = version == "legacy" ? reportPath : Path.Combine(directory, $"address-check-{version}.json");
-    var geometryPath = Path.Combine(directory, version == "legacy" ? "osm-geometry.geojson" : $"osm-geometry-{version}.geojson");
+    var selectedReport = GetVersionFilePath(version, "address-check.json");
+    var geometryPath = GetVersionFilePath(version, "osm-geometry.geojson");
     var reportBytes = await File.ReadAllBytesAsync(selectedReport, cancellationToken);
     using var geometry = JsonDocument.Parse(await File.ReadAllBytesAsync(geometryPath, cancellationToken));
     var root = geometry.RootElement;
@@ -322,7 +320,7 @@ app.MapGet("/api/versions/{version}/matrix-calculation", async (string version, 
             {
                 var input = MatrixWorker.CreateRequest(version, await GetReviewStore(version)!.GetAsync(cancellationToken),
                     await GetSettingsStore(version)!.GetAsync(cancellationToken));
-                var matrixPath = MatrixWorker.MatrixPath(Path.GetDirectoryName(Path.GetFullPath(reportPath))!, version);
+                var matrixPath = MatrixWorker.MatrixPath(outputDirectory, version);
                 await using var stream = File.OpenRead(matrixPath);
                 using var matrix = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
                 var metadata = matrix.RootElement.GetProperty("metadata");
@@ -453,10 +451,9 @@ app.MapGet("/api/versions/{version}/driver-pdf-data", async (string version, Htt
         if ((await GetRouteStatusAsync(version, client, cancellationToken)).State != "completed")
             return Results.Problem("Er is geen actuele voltooide routeberekening.", statusCode: 409);
         var input = await GetRouteInputAsync(version, cancellationToken);
-        var directory = Path.GetDirectoryName(Path.GetFullPath(reportPath))!;
-        var routePath = Path.Combine(directory, version == "legacy" ? "routes.json" : $"routes-{version}.json");
+        var routePath = GetVersionFilePath(version, "routes.json");
         var routeBytes = await File.ReadAllBytesAsync(routePath, cancellationToken);
-        var matrixPath = MatrixWorker.MatrixPath(directory, version);
+        var matrixPath = MatrixWorker.MatrixPath(outputDirectory, version);
         var matrixBytes = await File.ReadAllBytesAsync(matrixPath, cancellationToken);
         var (inputHash, rows, _) = await InputCsvStore.ReadDeliveriesAsync(
             InputCsvStore.InputPath(inputCsvPath, version), input.Capacity, cancellationToken);
@@ -544,8 +541,7 @@ app.MapGet("/api/versions/{version}/routes", async (string version, HttpClient c
     {
         var status = await GetRouteStatusAsync(version, client, cancellationToken);
         if (status.State != "completed") return Results.Problem("Er is geen actuele voltooide routeberekening.", statusCode: 409);
-        var path = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(reportPath))!,
-            version == "legacy" ? "routes.json" : $"routes-{version}.json");
+        var path = GetVersionFilePath(version, "routes.json");
         return Results.File(await File.ReadAllBytesAsync(path, cancellationToken), "application/json");
     }
     catch (Exception exception) when (exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException or JsonException)

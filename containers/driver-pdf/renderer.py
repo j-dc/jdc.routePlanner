@@ -104,6 +104,7 @@ def render(snapshot, output_dir):
     heading = ParagraphStyle("heading", parent=regular, fontName="DejaVuBold", fontSize=17, leading=22)
     stop_heading = ParagraphStyle("stop", parent=regular, fontName="DejaVuBold", fontSize=12, leading=16)
     count = ParagraphStyle("count", parent=regular, fontName="DejaVuBold", fontSize=20, leading=25)
+    navigation_button = ParagraphStyle("navigation_button", parent=regular, alignment=1)
     for route in snapshot["routes"]:
         driver = route["driver"]
         stops = [stop for trip in route["trips"] for stop in trip["stops"]]
@@ -117,12 +118,25 @@ def render(snapshot, output_dir):
                 number += 1
                 delivery = deliveries[stop["csvRecordNumber"]]
                 lon, lat = points[stop["matrixIndex"]]
+                coordinates = f"{lat}%2C{lon}"
                 left = [
                     Paragraph(f"Stop {number}", stop_heading),
                     Paragraph(_text(delivery["name"]), regular),
                     Paragraph("<b>" + _text(delivery["street"] + " " + delivery["houseNumber"]) + "</b>", regular),
                     Paragraph(_text(delivery["postcode"] + " " + delivery["municipality"]), regular),
-                    Paragraph(f'<link href="geo:{lat},{lon}">Open navigatie (geo:, geschikte app vereist)</link>', regular),
+                    Table([[
+                        Paragraph(f'<link href="https://www.google.com/maps/dir/?api=1&amp;destination={coordinates}&amp;travelmode=driving"><font color="#FFFFFF">Google maps</font></link>', navigation_button),
+                        Paragraph(f'<link href="https://maps.apple.com/?daddr={coordinates}"><font color="#FFFFFF">Apple maps</font></link>', navigation_button),
+                    ]], colWidths=[42 * mm, 42 * mm], hAlign="LEFT",
+                        style=TableStyle([
+                            ("BACKGROUND", (0, 0), (0, 0), "#4285F4"),
+                            ("BACKGROUND", (1, 0), (1, 0), "#555555"),
+                            ("BOX", (0, 0), (-1, -1), 0, "#FFFFFF"),
+                            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                            ("TOPPADDING", (0, 0), (-1, -1), 4),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+                        ])),
                 ]
                 right = [Paragraph(f"{delivery['packageCount']} Pakketten", count)]
                 for label, key in (("Bellen", "bellen"), ("Opmerking", "remarkUpper")):

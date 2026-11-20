@@ -1,12 +1,17 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { test } from 'node:test';
 
 const wait = milliseconds => new Promise(resolve => setTimeout(resolve, milliseconds));
 const digest = value => createHash('sha256').update(value).digest('hex').toUpperCase();
+async function writeVersionFile(version, name, data) {
+  const directory = `/source/${version}`;
+  await mkdir(directory, { recursive: true });
+  await writeFile(`${directory}/${name}`, data);
+}
 
 test('API and VROOM worker produce complete routes from an actual saved matrix', async () => {
   const matrixService = createServer((request, response) => {
@@ -41,7 +46,7 @@ test('API and VROOM worker produce complete routes from an actual saved matrix',
           candidates: [{ candidateId: `test-${index}`, geometryIsValid: true, latitude, longitude }] };
       })
     };
-    await writeFile(`/source/address-check-${version}.json`, JSON.stringify(report));
+    await writeVersionFile(version, 'address-check.json', JSON.stringify(report));
     const review = await (await fetch(`${url}/review`)).json();
     const put = (path, body) => fetch(`${url}/${path}`, {
       method: 'PUT', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body)
@@ -61,7 +66,7 @@ test('API and VROOM worker produce complete routes from an actual saved matrix',
         locationFingerprint: digest(JSON.stringify(locations)), locations },
       matrices: { car: { costs, distances: costs, durations: costs } }
     };
-    await writeFile(`/source/matrix-${version}.json`, JSON.stringify(matrix));
+    await writeVersionFile(version, 'matrix.json', JSON.stringify(matrix));
     assert.equal((await (await fetch(`${url}/matrix-calculation`)).json()).state, 'completed');
     assert.equal((await put('settings/Capacity', { value: '1' })).status, 200);
     const oversized = await fetch(`${url}/route-calculation`, {
@@ -116,7 +121,7 @@ test('API and VROOM worker produce complete routes from an actual saved matrix',
       const badUpload = await fetch(api, { method: 'POST', headers: { 'content-type': 'text/csv' }, body: badCsv });
       assert.equal(badUpload.status, 201);
       const { id: badVersion } = await badUpload.json();
-      await writeFile(`/source/address-check-${badVersion}.json`, JSON.stringify({
+      await writeVersionFile(badVersion, 'address-check.json', JSON.stringify({
         ...report, inputSha256: digest(badCsv), totalRecords: 1, results: [report.results[0]]
       }));
       const badUrl = `${api}/${badVersion}`;

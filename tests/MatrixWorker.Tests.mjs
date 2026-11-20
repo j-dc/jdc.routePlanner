@@ -102,7 +102,7 @@ test('matrix worker batches, preserves indices, rejects failures and detects int
     assert.equal((await start()).status, 409);
     release();
     await until('completed');
-    const output = JSON.parse(await readFile(join(directory, 'matrix.json'), 'utf8'));
+    const output = JSON.parse(await readFile(join(directory, 'legacy', 'matrix.json'), 'utf8'));
     assert.deepEqual(output.metadata.locations, locations);
     assert.equal(output.matrices.car.distances.length, 22);
     assert.ok(output.matrices.car.distances.every(row => row.length === 22 && row.every(value => value === 123)));

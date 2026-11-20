@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { after, before, test } from 'node:test';
 
@@ -20,6 +20,12 @@ let routeState = 'idle';
 let routeInput;
 let geometryAvailable = true;
 let pdfVersion;
+async function writeVersionFile(version, name, data) {
+  const directory = `/source/${version}`;
+  await mkdir(directory, { recursive: true });
+  await writeFile(`${directory}/${name}`, data);
+}
+const readVersionFile = (version, name) => readFile(`/source/${version}/${name}`);
 const services = createServer(async (request, response) => {
   if (request.url === '/photon') {
     response.writeHead(photonReady ? 200 : 503);
@@ -132,8 +138,8 @@ test('reviews remain isolated and reject reports for different input', async () 
     totalRecords: 1,
     results: [{ csvRecordNumber: 2, status: 'needs_review', candidates: [] }],
   };
-  await writeFile(`/source/address-check-${firstVersion}.json`, JSON.stringify(report));
-  await writeFile(`/source/address-check-${secondVersion}.json`, JSON.stringify(report));
+  await writeVersionFile(firstVersion, 'address-check.json', JSON.stringify(report));
+  await writeVersionFile(secondVersion, 'address-check.json', JSON.stringify(report));
   assert.equal((await fetch(`${baseUrl}/api/versions/${firstVersion}/review`)).status, 200);
   const updated = await fetch(`${baseUrl}/api/versions/${firstVersion}/review/2`, {
     method: 'PUT', headers: { 'content-type': 'application/json' },
@@ -143,7 +149,7 @@ test('reviews remain isolated and reject reports for different input', async () 
   const other = await (await fetch(`${baseUrl}/api/versions/${secondVersion}/review`)).json();
   assert.equal(other.records[0].decision, 'pending');
   report.inputSha256 = 'BAD';
-  await writeFile(`/source/address-check-${firstVersion}.json`, JSON.stringify(report));
+  await writeVersionFile(firstVersion, 'address-check.json', JSON.stringify(report));
   const response = await fetch(`${baseUrl}/api/versions/${firstVersion}/review`);
   assert.equal(response.status, 409);
   assert.equal((await fetch(`${baseUrl}/api/versions/not-a-version/review`)).status, 404);
@@ -167,7 +173,7 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
     results: [{ csvRecordNumber: 2, status: 'valid', latitude: 50, longitude: 3,
       candidates: [{ candidateId: 'test', geometryIsValid: true, latitude: 50, longitude: 3 }] }]
   };
-  await writeFile(`/source/address-check-${version}.json`, JSON.stringify(report));
+  await writeVersionFile(version, 'address-check.json', JSON.stringify(report));
   const url = `${baseUrl}/api/versions/${version}/matrix-calculation`;
   const post = { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' };
   assert.equal((await (await fetch(url)).json()).state, 'idle');
@@ -179,7 +185,7 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   const oldLocations = [{ csvRecordNumber: 2, latitude: 50, longitude: 3 }];
   const fingerprint = createHash('sha256').update(JSON.stringify(oldLocations)).digest('hex').toUpperCase();
   matrixState = 'completed';
-  await writeFile(`/source/matrix-${version}.json`, JSON.stringify({ metadata: {
+  await writeVersionFile(version, 'matrix.json', JSON.stringify({ metadata: {
     version, reviewFingerprint: review.sourceFingerprint, reviewUpdatedAtUtc: review.updatedAtUtc,
     locationFingerprint: fingerprint, locations: oldLocations
   } }));
@@ -202,7 +208,7 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
     version, reviewFingerprint: matrixInput.reviewFingerprint, reviewUpdatedAtUtc: matrixInput.reviewUpdatedAtUtc,
     locationFingerprint: newFingerprint, locations
   } });
-  await writeFile(`/source/matrix-${version}.json`, matrix);
+  await writeVersionFile(version, 'matrix.json', matrix);
   assert.equal((await (await fetch(url)).json()).state, 'completed');
   assert.equal((await fetch(routeUrl, post)).status, 409);
   const driverUrl = `${baseUrl}/api/versions/${version}/settings/nmbDrivers`;
@@ -225,24 +231,24 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   assert.equal(routeInput.matrixSha256, createHash('sha256').update(matrix).digest('hex').toUpperCase());
   assert.equal((await (await fetch(routeUrl)).json()).state, 'running');
   assert.equal((await fetch(routeUrl, post)).status, 409);
-  await writeFile(`/source/routes-${version}.json`, JSON.stringify({
+  await writeVersionFile(version, 'routes.json', JSON.stringify({
     metadata: { version, driverCount: 1, matrixSha256: routeInput.matrixSha256 }, routes: []
   }));
   routeState = 'completed';
   assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
-  await writeFile(`/source/routes-${version}.json`, JSON.stringify({
+  await writeVersionFile(version, 'routes.json', JSON.stringify({
     metadata: { version, driverCount: 1, matrixSha256: routeInput.matrixSha256,
       serviceTimeModel: 'per-location-visit-v1', serviceSecondsPerVisit: 60 }, routes: []
   }));
   assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
-  await writeFile(`/source/routes-${version}.json`, JSON.stringify({
+  await writeVersionFile(version, 'routes.json', JSON.stringify({
     metadata: { version, driverCount: 1, matrixSha256: routeInput.matrixSha256,
       serviceTimeModel: 'per-location-visit-v1', serviceSecondsPerVisit: 60,
       optimization: 'vroom-capacity-multitrip-v1', inputSha256: routeInput.inputSha256,
       capacity: 60, reloadSeconds: 10, maxAllowedDifferenceSeconds: 1800 }, routes: []
   }));
   assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
-  await writeFile(`/source/routes-${version}.json`, JSON.stringify({
+  await writeVersionFile(version, 'routes.json', JSON.stringify({
     metadata: { version, driverCount: 1, matrixSha256: routeInput.matrixSha256,
       serviceTimeModel: 'per-location-visit-v1', serviceSecondsPerVisit: 60,
       optimization: 'vroom-capacity-multitrip-v1', inputSha256: routeInput.inputSha256,
@@ -307,9 +313,9 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   assert.equal(routeInput.maxDifferenceMinutes, 0);
   routeState = 'completed';
   assert.equal((await setSetting('maxDifferenceMinutes', '30')).status, 200);
-  await writeFile(`/source/matrix-${version}.json`, `${matrix} `);
+  await writeVersionFile(version, 'matrix.json', `${matrix} `);
   assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
-  await writeFile(`/source/matrix-${version}.json`, matrix);
+  await writeVersionFile(version, 'matrix.json', matrix);
   assert.equal((await setDrivers('2')).status, 200);
   assert.equal((await (await fetch(routeUrl)).json()).state, 'stale');
   assert.equal((await fetch(`${baseUrl}/api/versions/${version}/routes`)).status, 409);
@@ -329,19 +335,19 @@ test('route calculation rejects unknown versions and invalid inputs', async () =
 test('GeoJSON is available only for its current report', async () => {
   const url = `${baseUrl}/api/versions/${secondVersion}/osm-geometry`;
   assert.equal((await fetch(url)).status, 404);
-  const reportBytes = await readFile(`/source/address-check-${secondVersion}.json`);
+  const reportBytes = await readVersionFile(secondVersion, 'address-check.json');
   const geometry = { type: 'FeatureCollection', features: [], metadata: {
     sourceReportSha256: createHash('sha256').update(reportBytes).digest('hex'),
   } };
-  await writeFile(`/source/osm-geometry-${secondVersion}.geojson`, JSON.stringify(geometry));
+  await writeVersionFile(secondVersion, 'osm-geometry.geojson', JSON.stringify(geometry));
   const response = await fetch(url);
   assert.equal(response.status, 200);
   assert.match(response.headers.get('content-type'), /application\/geo\+json/);
   assert.deepEqual(await response.json(), geometry);
   geometry.metadata.sourceReportSha256 = 'BAD';
-  await writeFile(`/source/osm-geometry-${secondVersion}.geojson`, JSON.stringify(geometry));
+  await writeVersionFile(secondVersion, 'osm-geometry.geojson', JSON.stringify(geometry));
   assert.equal((await fetch(url)).status, 409);
-  await writeFile(`/source/osm-geometry-${secondVersion}.geojson`, '[]');
+  await writeVersionFile(secondVersion, 'osm-geometry.geojson', '[]');
   assert.equal((await fetch(url)).status, 409);
 });
 
