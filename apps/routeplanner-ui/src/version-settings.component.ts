@@ -87,6 +87,7 @@ interface RouteResult extends RoutePlan {
       <div class="calculation-actions">
         <button type="button" (click)="calculateMatrix()" [disabled]="!settingsLoaded || !startLocation || startBusy || matrixBusy || matrixState === null || matrixState === 'running' || matrixState === 'busy'">{{ matrixState === 'running' || matrixBusy ? 'Bezig…' : 'Bereken Matrix' }}</button>
         <button type="button" (click)="calculateRoute()" [disabled]="routeBusy || routeState === null || routeState === 'running' || routeState === 'busy'">{{ routeState === 'running' || routeBusy ? 'Bezig…' : 'Bereken route' }}</button>
+        <button type="button" (click)="renderRouteMaps()" [disabled]="!routeResult || mapBusy || mapState === null || mapState === 'running' || mapState === 'busy'">{{ mapState === 'running' || mapBusy ? 'Bezig…' : 'Render route kaarten' }}</button>
         <button type="button" (click)="createPdfs()" [disabled]="!routeResult || pdfBusy || pdfState === null || pdfState === 'running' || pdfState === 'busy'">Maak chauffeur-PDF's</button>
       </div>
       <p class="settings-empty" *ngIf="settingsLoaded && !startLocation">Stel eerst een startlocatie in om de matrix te berekenen.</p>
@@ -97,6 +98,10 @@ interface RouteResult extends RoutePlan {
       <p class="settings-error" *ngIf="routeMessage" role="alert">{{ routeMessage }}</p>
       <p class="settings-empty" *ngIf="routeState === 'running'">Routeberekening loopt.</p>
       <p class="settings-empty" *ngIf="routeState === 'busy'">Een routeberekening voor een andere versie loopt.</p>
+      <p class="settings-error" *ngIf="mapMessage" role="alert">{{ mapMessage }}</p>
+      <p class="settings-empty" *ngIf="mapState === 'running'">Routekaarten worden gerenderd.</p>
+      <p class="settings-empty" *ngIf="mapState === 'busy'">Routekaarten voor een andere versie worden gerenderd.</p>
+      <p class="settings-empty" *ngIf="mapState === 'completed'">Routekaarten staan in de uitvoermap: {{ version }}/route-maps. Maak ze opnieuw na wijzigingen aan de planning.</p>
       <p class="settings-error" *ngIf="pdfMessage" role="alert">{{ pdfMessage }}</p>
       <p class="settings-empty" *ngIf="pdfState === 'running'">Chauffeur-PDF's worden gemaakt.</p>
       <p class="settings-empty" *ngIf="pdfState === 'busy'">PDF's voor een andere versie worden gemaakt.</p>
@@ -178,6 +183,9 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
   routeState: MatrixStatus['state'] | null = null;
   routeResult: RouteResult | null = null;
   routeMessage = '';
+  mapBusy = false;
+  mapState: PdfStatus['state'] | null = null;
+  mapMessage = '';
   pdfBusy = false;
   pdfState: PdfStatus['state'] | null = null;
   pdfMessage = '';
@@ -187,6 +195,8 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
   private matrixGeneration = 0;
   private routeTimer: ReturnType<typeof setTimeout> | undefined;
   private routeGeneration = 0;
+  private mapTimer: ReturnType<typeof setTimeout> | undefined;
+  private mapGeneration = 0;
   private pdfTimer: ReturnType<typeof setTimeout> | undefined;
   private pdfGeneration = 0;
   private get url(): string { return `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/settings`; }
@@ -228,6 +238,9 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
     this.routeState = null;
     this.routeResult = null;
     this.routeMessage = '';
+    this.mapBusy = false;
+    this.mapState = null;
+    this.mapMessage = '';
     this.pdfBusy = false;
     this.pdfState = null;
     this.pdfMessage = '';
@@ -236,11 +249,14 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
     const generation = ++this.matrixGeneration;
     clearTimeout(this.routeTimer);
     const routeGeneration = ++this.routeGeneration;
+    clearTimeout(this.mapTimer);
+    const mapGeneration = ++this.mapGeneration;
     clearTimeout(this.pdfTimer);
     const pdfGeneration = ++this.pdfGeneration;
     if (!this.version || this.version === 'new') return;
     this.refreshMatrixStatus(generation);
     this.refreshRouteStatus(routeGeneration);
+    this.refreshMapStatus(mapGeneration);
     this.refreshPdfStatus(pdfGeneration);
     const version = this.version;
     this.loading = true;
@@ -272,9 +288,11 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
   ngOnDestroy(): void {
     ++this.matrixGeneration;
     ++this.routeGeneration;
+    ++this.mapGeneration;
     ++this.pdfGeneration;
     clearTimeout(this.matrixTimer);
     clearTimeout(this.routeTimer);
+    clearTimeout(this.mapTimer);
     clearTimeout(this.pdfTimer);
   }
 
@@ -398,6 +416,52 @@ export class VersionSettingsComponent implements OnChanges, OnDestroy {
           ? error.error.detail : 'De routeberekening kon niet worden gestart.';
         this.routeBusy = false;
         this.routeTimer = setTimeout(() => this.refreshRouteStatus(generation), 3000);
+      }
+    });
+  }
+
+  private refreshMapStatus(generation: number): void {
+    const url = `${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/route-maps`;
+    this.http.get<PdfStatus>(url).subscribe({
+      next: status => {
+        if (generation !== this.mapGeneration) return;
+        if (!['idle', 'running', 'busy', 'completed', 'failed'].includes(status.state)) {
+          this.mapState = null;
+          this.mapMessage = 'De status van de routekaarten is ongeldig.';
+        } else {
+          this.mapState = status.state;
+          this.mapMessage = status.state === 'failed' ? 'Routekaarten renderen is mislukt. Controleer de containerlogs.' : '';
+        }
+        if (status.state === 'running' || status.state === 'busy' || this.mapState === null)
+          this.mapTimer = setTimeout(() => this.refreshMapStatus(generation), 3000);
+      },
+      error: () => {
+        if (generation !== this.mapGeneration) return;
+        this.mapState = null;
+        this.mapMessage = 'De status van de routekaarten is niet beschikbaar.';
+        this.mapTimer = setTimeout(() => this.refreshMapStatus(generation), 3000);
+      }
+    });
+  }
+
+  renderRouteMaps(): void {
+    const generation = ++this.mapGeneration;
+    clearTimeout(this.mapTimer);
+    this.mapBusy = true;
+    this.mapMessage = '';
+    this.http.post(`${environment.reviewApiUrl}/api/versions/${encodeURIComponent(this.version)}/route-maps`, {}).subscribe({
+      next: () => {
+        if (generation !== this.mapGeneration) return;
+        this.mapBusy = false;
+        this.mapState = 'running';
+        this.refreshMapStatus(generation);
+      },
+      error: (error: unknown) => {
+        if (generation !== this.mapGeneration) return;
+        this.mapBusy = false;
+        this.mapMessage = error instanceof HttpErrorResponse && typeof error.error?.detail === 'string'
+          ? error.error.detail : 'Routekaarten renderen kon niet worden gestart.';
+        this.mapTimer = setTimeout(() => this.refreshMapStatus(generation), 3000);
       }
     });
   }

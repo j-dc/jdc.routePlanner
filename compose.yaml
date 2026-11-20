@@ -150,6 +150,7 @@ services:
       - --providers.file.filename=/etc/traefik/dynamic.yaml
       - --providers.file.watch=true
       - --entrypoints.web.address=:8000
+      - --entrypoints.browser.address=:80
       - --api.dashboard=false
       - --accesslog=false
       - --log.level=INFO
@@ -173,6 +174,11 @@ services:
     depends_on:
       - routeplanner-ui
       - routeplanner-api
+    networks:
+      default:
+        aliases:
+          - routing.localtest.me
+          - routing-api.localtest.me
     read_only: true
     tmpfs:
       - /tmp
@@ -227,6 +233,26 @@ services:
     cap_drop:
       - ALL
     restart: unless-stopped
+
+  render-route-maps:
+    build:
+      context: .
+      dockerfile: containers/render-route-maps/Dockerfile
+    volumes:
+      - type: bind
+        source: ${OUTPUT_DATA_DIR:-../jdc.routePlanner-private-data/output}
+        target: /output
+      - type: volume
+        source: address-check-jobs
+        target: /jobs
+        read_only: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
 
   matrix-worker:
     image: jdc-route-planner-routeplanner-api

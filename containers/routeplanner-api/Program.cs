@@ -534,6 +534,46 @@ app.MapPost("/api/versions/{version}/driver-pdfs", async (string version, HttpRe
 .WithName("CreateDriverPdfs")
 .WithSummary("Start het maken van chauffeur-PDF's");
 
+app.MapGet("/api/versions/{version}/route-maps", async (string version, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetReviewStore(version) is null) return Results.NotFound();
+    try
+    {
+        using var response = await client.GetAsync(new Uri(new Uri(brokerUrl), $"route-maps/status/{version}"), cancellationToken);
+        if (!response.IsSuccessStatusCode) return Results.Problem("De status van de routekaarten is niet beschikbaar.", statusCode: 503);
+        return Results.Content(await response.Content.ReadAsStringAsync(cancellationToken), "application/json");
+    }
+    catch (Exception exception) when (exception is HttpRequestException or TaskCanceledException)
+    {
+        return Results.Problem("De status van de routekaarten is niet beschikbaar.", statusCode: 503);
+    }
+})
+.WithName("GetRouteMapStatus");
+
+app.MapPost("/api/versions/{version}/route-maps", async (string version, HttpRequest request, HttpClient client, CancellationToken cancellationToken) =>
+{
+    if (GetReviewStore(version) is null) return Results.NotFound();
+    if (!request.HasJsonContentType() || (request.Headers.Origin.Count > 0 && request.Headers.Origin.ToString() != "http://routing.localtest.me"))
+        return Results.Problem("Invalid request origin or content type.", statusCode: 403);
+    try
+    {
+        if ((await GetRouteStatusAsync(version, client, cancellationToken)).State != "completed")
+            return Results.Problem("Er is geen actuele voltooide routeberekening.", statusCode: 409);
+        using var response = await client.PostAsync(new Uri(new Uri(brokerUrl), $"route-maps/start/{version}"), null, cancellationToken);
+        if (response.StatusCode == System.Net.HttpStatusCode.Conflict)
+            return Results.Conflict(new { detail = "Er worden al routekaarten gerenderd." });
+        if (!response.IsSuccessStatusCode)
+            return Results.Problem("De routekaarten konden niet worden gestart. Controleer de broker en container.", statusCode: 503);
+        return Results.Accepted($"/api/versions/{version}/route-maps", new MatrixStatus("running"));
+    }
+    catch (Exception exception) when (exception is HttpRequestException or IOException or UnauthorizedAccessException or TaskCanceledException or JsonException)
+    {
+        app.Logger.LogWarning("Routekaarten konden niet worden gestart ({ErrorType}).", exception.GetType().Name);
+        return Results.Problem("De routekaarten konden niet worden gestart. Controleer de broker en container.", statusCode: 503);
+    }
+})
+.WithName("CreateRouteMaps");
+
 app.MapGet("/api/versions/{version}/routes", async (string version, HttpClient client, CancellationToken cancellationToken) =>
 {
     if (GetReviewStore(version) is null) return Results.NotFound();

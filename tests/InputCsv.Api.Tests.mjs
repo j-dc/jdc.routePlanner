@@ -20,6 +20,8 @@ let routeState = 'idle';
 let routeInput;
 let geometryAvailable = true;
 let pdfVersion;
+let routeMapState = 'idle';
+let routeMapVersion;
 async function writeVersionFile(version, name, data) {
   const directory = `/source/${version}`;
   await mkdir(directory, { recursive: true });
@@ -84,6 +86,17 @@ const services = createServer(async (request, response) => {
     geometryState = 'running';
     response.writeHead(202);
     return response.end(JSON.stringify({ state: geometryState }));
+  }
+  if (request.url.startsWith('/route-maps/status/')) return response.end(JSON.stringify({ state: routeMapState }));
+  if (request.url.startsWith('/route-maps/start/')) {
+    if (routeMapState === 'running') {
+      response.writeHead(409);
+      return response.end('{}');
+    }
+    routeMapVersion = request.url.slice('/route-maps/start/'.length);
+    routeMapState = 'running';
+    response.writeHead(202);
+    return response.end(JSON.stringify({ state: routeMapState }));
   }
   if (request.url.startsWith('/status/')) return response.end(JSON.stringify({ state: brokerState }));
   if (request.url.startsWith('/start/')) {
@@ -292,6 +305,15 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   assert.equal((await fetch(pdfUrl, post)).status, 202);
   assert.equal(pdfVersion, version);
   assert.equal((await fetch(pdfUrl, { ...post, headers: { ...post.headers, origin: 'http://example.test' } })).status, 403);
+  const routeMapsUrl = `${baseUrl}/api/versions/${version}/route-maps`;
+  const mapStatusResponse = await fetch(routeMapsUrl);
+  assert.equal(mapStatusResponse.status, 200, await mapStatusResponse.clone().text());
+  assert.equal((await mapStatusResponse.json()).state, 'idle');
+  assert.equal((await fetch(routeMapsUrl, { ...post, headers: { ...post.headers, origin: 'http://example.test' } })).status, 403);
+  assert.equal((await fetch(routeMapsUrl, post)).status, 202);
+  assert.equal(routeMapVersion, version);
+  assert.equal((await (await fetch(routeMapsUrl)).json()).state, 'running');
+  assert.equal((await fetch(routeMapsUrl, post)).status, 409);
   const geometryUrl = `${baseUrl}/api/versions/${version}/route-geometry`;
   assert.equal((await fetch(geometryUrl)).status, 200);
   geometryAvailable = false;
@@ -307,6 +329,7 @@ test('matrix endpoints start a validated snapshot and flag outdated output', asy
   assert.equal((await fetch(geometryUrl)).status, 409);
   assert.equal((await fetch(pdfDataUrl)).status, 409);
   assert.equal((await fetch(pdfUrl, post)).status, 409);
+  assert.equal((await fetch(routeMapsUrl, post)).status, 409);
   for (const invalid of ['0', '-1', '1.5', '', '2147483648']) {
     assert.equal((await setService(invalid)).status, 200);
     assert.equal((await fetch(routeUrl, post)).status, 409);

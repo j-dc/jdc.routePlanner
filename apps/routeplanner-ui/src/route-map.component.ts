@@ -58,14 +58,15 @@ export interface MapLocation {
       </div>
       <div class="route-legend" *ngIf="routeLegend.length" role="group" aria-label="Routes op de kaart">
         <button type="button" [attr.aria-pressed]="selectedDriver === null" (click)="selectRoute(null)">Alle routes</button>
-        <button type="button" *ngFor="let route of routeLegend" [attr.aria-pressed]="selectedDriver === route.driver" (click)="selectRoute(route.driver)">
+        <button type="button" *ngFor="let route of routeLegend" [attr.data-driver]="route.driver" [attr.aria-pressed]="selectedDriver === route.driver" (click)="selectRoute(route.driver)">
           <span class="route-swatch" [style.background-color]="route.color"></span>Chauffeur {{ route.driver }}
         </button>
       </div>
       <p class="map-empty" *ngIf="routeLegend.length > 16">Vanaf chauffeur 17 worden kleuren herhaald.</p>
       <div class="map-body">
         <div class="map-container">
-          <div #mapTarget class="map" tabindex="0" aria-label="Kaart met bevestigde leverlocaties"></div>
+          <div #mapTarget class="map" tabindex="0" aria-label="Kaart met bevestigde leverlocaties" [attr.data-render-state]="mapRenderState"
+            [attr.data-geometry-state]="geometryLoading || geometryRunning || geometryBusy || geometryStarting ? 'loading' : geometryError ? 'error' : 'ready'"></div>
           <details class="map-options">
             <summary>Kaartopties</summary>
             <label><input #clusterOption type="checkbox" [checked]="clusteringEnabled" (change)="setClustering(clusterOption.checked)"> Leveradressen clusteren</label>
@@ -128,6 +129,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   selectedLocations: MapLocation[] = [];
   clusteringEnabled = false;
   geometryError = '';
+  geometryLoading = true;
   geometryRunning = false;
   geometryBusy = false;
   geometryStarting = false;
@@ -136,6 +138,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   routeLoading = false;
   routeLegend: { driver: number; color: string }[] = [];
   selectedDriver: number | null = null;
+  mapRenderState = 'loading';
   private readonly source = new VectorSource<Feature<Point>>();
   private readonly clusterSource = new Cluster({ distance: 36, source: this.source });
   private readonly markerLayer = new VectorLayer({ source: this.source });
@@ -151,6 +154,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
   private statusTimer: ReturnType<typeof setTimeout> | null = null;
   private geometryData: object | null = null;
   private map: Map | null = null;
+  private renderGeneration = 0;
 
   ngAfterViewInit(): void {
     for (const layer of [this.markerLayer, this.clusterLayer]) {
@@ -270,6 +274,16 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
     this.updateLocations();
     this.updateGeometry();
     this.routeSource.changed();
+    this.waitForMapRender();
+  }
+
+  private waitForMapRender(): void {
+    const generation = ++this.renderGeneration;
+    this.mapRenderState = 'loading';
+    this.map?.once('rendercomplete', () => {
+      if (generation === this.renderGeneration) this.mapRenderState = 'ready';
+    });
+    this.map?.render();
   }
 
   loadRoutes(): void {
@@ -336,6 +350,7 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
 
   private loadGeometry(): void {
     this.geometrySubscription?.unsubscribe();
+    this.geometryLoading = true;
     this.geometryError = '';
     this.geometryData = null;
     this.geometrySource.clear();
@@ -344,8 +359,10 @@ export class RouteMapComponent implements AfterViewInit, OnChanges, OnDestroy {
       next: data => {
         this.geometryData = data;
         this.updateGeometry();
+        this.geometryLoading = false;
       },
       error: error => {
+        this.geometryLoading = false;
         this.geometryError = error instanceof HttpErrorResponse && error.status === 404
           ? 'Lokale OSM-geometrie ontbreekt voor deze versie.'
           : 'Lokale OSM-geometrie kon niet worden geladen.';

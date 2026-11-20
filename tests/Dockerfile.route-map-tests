@@ -1,0 +1,2 @@
+FROM route-map-worker-test
+COPY --from=routeplanner-ui-selection-test /usr/share/nginx/html /frontend

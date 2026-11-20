@@ -8,11 +8,14 @@ public static class AddressCheckBroker
 {
     private const string ContainerName = "jdc-route-planner-check-addresses-1";
     private const string GeometryContainerName = "jdc-route-planner-extract-osm-geometry-1";
+    private const string RouteMapContainerName = "jdc-route-planner-render-route-maps-1";
     private const string JobFile = "/jobs/version";
     private const string GeometryVersionFile = "/jobs/geometry-version";
     private const string GeometryJobFile = "/jobs/geometry.json";
     private const string GeometryRequestFile = "/jobs/geometry-request.json";
     private const string GeometryRefreshFile = "/jobs/geometry-refresh.json";
+    private const string RouteMapVersionFile = "/jobs/route-map-version";
+    private const string RouteMapJobFile = "/jobs/route-map.json";
     private static readonly SemaphoreSlim Gate = new(1, 1);
 
     public static async Task RunAsync()
@@ -134,6 +137,46 @@ public static class AddressCheckBroker
             {
                 Gate.Release();
             }
+        });
+        app.MapGet("/route-maps/status/{version}", async (string version, CancellationToken cancellationToken) =>
+        {
+            if (!InputCsvStore.IsVersion(version)) return Results.NotFound();
+            await Gate.WaitAsync(cancellationToken);
+            try
+            {
+                var container = await InspectAsync(docker, RouteMapContainerName, "render-route-maps", cancellationToken);
+                var job = File.Exists(RouteMapJobFile)
+                    ? JsonSerializer.Deserialize<RouteMapJob>(await File.ReadAllTextAsync(RouteMapJobFile, cancellationToken))
+                    : null;
+                if (container.Running) return Results.Ok(new { state = job?.Version == version ? "running" : "busy" });
+                if (job?.Version != version) return Results.Ok(new { state = "idle" });
+                return Results.Ok(new { state = container.Started && container.StartedAt != job.PreviousStartedAt && container.ExitCode == 0 ? "completed" : "failed" });
+            }
+            catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException or InvalidDataException or SocketException or UnauthorizedAccessException or TaskCanceledException)
+            {
+                return Results.Problem("The route-map container status is unavailable.", statusCode: 503);
+            }
+            finally { Gate.Release(); }
+        });
+        app.MapPost("/route-maps/start/{version}", async (string version, CancellationToken cancellationToken) =>
+        {
+            if (!InputCsvStore.IsVersion(version)) return Results.NotFound();
+            await Gate.WaitAsync(cancellationToken);
+            try
+            {
+                var container = await InspectAsync(docker, RouteMapContainerName, "render-route-maps", cancellationToken);
+                if (container.Running) return Results.Conflict(new { detail = "Route maps are already being rendered." });
+                await WriteTextAtomicallyAsync(RouteMapVersionFile, version, cancellationToken);
+                await WriteAtomicallyAsync(RouteMapJobFile, new RouteMapJob(version, container.StartedAt), cancellationToken);
+                using var response = await docker.PostAsync($"/containers/{container.Id}/start", null, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                return Results.Accepted(value: new { state = "running" });
+            }
+            catch (Exception exception) when (exception is HttpRequestException or IOException or JsonException or InvalidDataException or SocketException or UnauthorizedAccessException or TaskCanceledException)
+            {
+                return Results.Problem("The route-map container could not be started.", statusCode: 503);
+            }
+            finally { Gate.Release(); }
         });
         var monitor = MonitorAsync(docker, app.Lifetime.ApplicationStopping);
         await app.RunAsync();
@@ -291,4 +334,5 @@ public static class AddressCheckBroker
     private sealed record GeometryJob(string Version, string CheckStartedAt, string PreviousGeometryStartedAt, string? Result = null);
     private sealed record GeometryRequest(string Version, string PreviousCheckStartedAt);
     private sealed record GeometryRefresh(string Version, string PreviousGeometryStartedAt);
+    private sealed record RouteMapJob(string Version, string PreviousStartedAt);
 }

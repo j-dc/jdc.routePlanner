@@ -48,7 +48,7 @@ if ($LASTEXITCODE -ne 0) {
     throw 'Could not start Valhalla for matrix calculation.'
 }
 
-& docker @composeArguments up --no-build --pull never --no-start --no-deps check-addresses extract-osm-geometry
+& docker @composeArguments up --no-build --pull never --no-start --no-deps check-addresses extract-osm-geometry render-route-maps
 if ($LASTEXITCODE -ne 0) {
     throw 'Could not prepare the address-check container.'
 }

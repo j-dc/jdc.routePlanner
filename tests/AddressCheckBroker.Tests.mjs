@@ -8,6 +8,7 @@ const otherVersion = '20261117T1234571234567Z';
 const socketPath = '/var/run/docker.sock';
 const containerId = 'a'.repeat(64);
 const geometryId = 'b'.repeat(64);
+const routeMapId = 'c'.repeat(64);
 let state = 'created';
 let exitCode = 0;
 let project = 'jdc-route-planner';
@@ -15,6 +16,9 @@ let starts = 0;
 let geometryState = 'created';
 let geometryExitCode = 0;
 let geometryStarts = 0;
+let routeMapState = 'created';
+let routeMapExitCode = 0;
+let routeMapStarts = 0;
 
 const docker = createServer((request, response) => {
   if (request.url === '/_ping') return response.end('OK');
@@ -31,6 +35,13 @@ const docker = createServer((request, response) => {
     } }, State: { Running: geometryState === 'running', Status: geometryState, ExitCode: geometryExitCode,
       StartedAt: geometryState === 'created' ? 'never' : `geometry-run-${geometryStarts}` } }));
   }
+  if (request.url === '/containers/jdc-route-planner-render-route-maps-1/json') {
+    response.setHeader('content-type', 'application/json');
+    return response.end(JSON.stringify({ Id: routeMapId, Config: { Labels: {
+      'com.docker.compose.project': project, 'com.docker.compose.service': 'render-route-maps',
+    } }, State: { Running: routeMapState === 'running', Status: routeMapState, ExitCode: routeMapExitCode,
+      StartedAt: routeMapState === 'created' ? 'never' : `route-map-run-${routeMapStarts}` } }));
+  }
   if (request.url === `/containers/${containerId}/start` && request.method === 'POST') {
     starts++;
     state = 'running';
@@ -40,6 +51,12 @@ const docker = createServer((request, response) => {
   if (request.url === `/containers/${geometryId}/start` && request.method === 'POST') {
     geometryStarts++;
     geometryState = 'running';
+    response.writeHead(204);
+    return response.end();
+  }
+  if (request.url === `/containers/${routeMapId}/start` && request.method === 'POST') {
+    routeMapStarts++;
+    routeMapState = 'running';
     response.writeHead(204);
     return response.end();
   }
@@ -123,4 +140,23 @@ test('geometry can be refreshed separately without replacing the address-check v
   geometryExitCode = 0;
   assert.equal((await (await fetch(broker(`/geometry/status/${otherVersion}`))).json()).state, 'completed');
   assert.equal((await (await fetch(broker(`/status/${version}`))).json()).state, 'completed');
+});
+
+test('route maps start only for the configured container and report job status', async () => {
+  assert.equal((await (await fetch(broker(`/route-maps/status/${version}`))).json()).state, 'idle');
+  assert.equal((await fetch(broker(`/route-maps/start/${version}`), { method: 'POST' })).status, 202);
+  assert.equal(await readFile('/jobs/route-map-version', 'utf8'), version);
+  assert.equal((await (await fetch(broker(`/route-maps/status/${version}`))).json()).state, 'running');
+  assert.equal((await (await fetch(broker(`/route-maps/status/${otherVersion}`))).json()).state, 'busy');
+  assert.equal((await fetch(broker(`/route-maps/start/${otherVersion}`), { method: 'POST' })).status, 409);
+  routeMapState = 'exited';
+  routeMapExitCode = 1;
+  assert.equal((await (await fetch(broker(`/route-maps/status/${version}`))).json()).state, 'failed');
+  assert.equal((await fetch(broker(`/route-maps/start/${otherVersion}`), { method: 'POST' })).status, 202);
+  routeMapState = 'exited';
+  routeMapExitCode = 0;
+  assert.equal((await (await fetch(broker(`/route-maps/status/${otherVersion}`))).json()).state, 'completed');
+  project = 'other-project';
+  assert.equal((await fetch(broker(`/route-maps/start/${version}`), { method: 'POST' })).status, 503);
+  project = 'jdc-route-planner';
 });

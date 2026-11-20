@@ -3,11 +3,13 @@ http:
     routeplanner-ui:
       entryPoints:
         - web
+        - browser
       rule: Host(`routing.localtest.me`)
       service: routeplanner-ui
     routeplanner-api:
       entryPoints:
         - web
+        - browser
       rule: Host(`routing-api.localtest.me`)
       service: routeplanner-api
     photon-geocoder:
